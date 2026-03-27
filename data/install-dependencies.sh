@@ -2,6 +2,14 @@
 #
 # Install dependencies required to compile and run `cmatrix` on supported distros.
 #
+# Build (matches CMakeLists.txt: C compiler, CMake, pkg-config, Notcurses.pc + dev headers, pthread via libc):
+#   build-essential, cmake, pkg-config, libnotcurses-dev
+#
+# Runtime / install UX (fonts, fontconfig): fontconfig, fonts-dejavu-core
+#
+# Optional (font/grid Python tooling under data/fonts/, not needed for cmake .. && make):
+#   python3
+#
 # Currently implemented for Ubuntu.
 
 set -euo pipefail

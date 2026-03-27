@@ -1,7 +1,7 @@
 # CMake build system for CMatrix (Linux amd64 only)
-# Tested with: CMake 3.31+, Notcurses 3.x
+# Tested with: CMake 3.22+ (Ubuntu apt), Notcurses 3.x
 
-cmake_minimum_required(VERSION 3.31)
+cmake_minimum_required(VERSION 3.22)
 
 project(CMatrix LANGUAGES C)
 
