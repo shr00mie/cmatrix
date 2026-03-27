@@ -1,0 +1,16 @@
+# CMatrix CI: Linux amd64 only (CMake)
+os: linux
+arch: amd64
+language: c
+sudo: required
+
+compiler:
+  - gcc
+  - clang
+
+script:
+  - mkdir -p build
+  - cd build
+  - cmake -DCMAKE_C_COMPILER="${CC}" -DCMAKE_BUILD_TYPE=Release ..
+  - cmake --build . -j
+  - ./cmatrix -V

@@ -1,0 +1,130 @@
+# Build directories
+/build
+build/
+
+# ---------------------------------------------------------------------------
+# CMake
+# ---------------------------------------------------------------------------
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+CPackConfig.cmake
+CPackSourceConfig.cmake
+CPack*.cmake
+_CPack_Packages/
+compile_commands.json
+CTestTestfile.cmake
+install_manifest.txt
+Testing/
+
+# ---------------------------------------------------------------------------
+# Autotools / configure
+# ---------------------------------------------------------------------------
+config.h
+Makefile
+Makefile.in
+stamp-h
+stamp-h[0-9]*
+config.cache
+config.log
+config.status
+config.*
+compile
+configure
+configure.lineno
+cmatrix.spec
+depcomp
+install-sh
+missing
+aclocal.m4
+autom4te.cache/
+.deps
+libtool
+*.la
+*.lo
+
+# ---------------------------------------------------------------------------
+# C / C++ build artifacts
+# ---------------------------------------------------------------------------
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.exe
+*.out
+*.d
+*.map
+*.lib
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.manifest
+*.gcno
+*.gcda
+*.su
+*.i
+*.ii
+*.gch
+*.pch
+*.s
+*.S
+*.tab.c
+cmatrix
+cmatrix.exe
+a.out
+*.core
+
+# ---------------------------------------------------------------------------
+# Tags / cscope / grep
+# ---------------------------------------------------------------------------
+TAGS
+ID
+GTAGS
+GRTAGS
+GSYMS
+GPATH
+tags
+cscope.out
+cscope.in.out
+cscope.po.out
+cscope.files
+
+# ---------------------------------------------------------------------------
+# IDE / editor
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+.vscode/*.code-workspace
+*.swp
+*.swo
+*~
+.cursor/
+
+# ---------------------------------------------------------------------------
+# OS / misc
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.log
+__pycache__/
+*.pyc
+.cache
+.venv-tools
+# ---------------------------------------------------------------------------
+# Project-specific
+# ---------------------------------------------------------------------------
+docs/
+profile_logs/
+SPECS.md
+# Generated monospace variant (run set_monospace_flag.py to recreate)
+data/fonts/Matrix-Code-NFI-mono.ttf
+data/fonts/backup/
+data/fonts/scripts/
+data/fonts/old/
+data/frames/
+backups/
+source-backups/

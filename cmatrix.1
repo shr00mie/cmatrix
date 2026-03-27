@@ -1,0 +1,115 @@
+.TH CMatrix 1 "Mon May 3 1999"
+.SH NAME
+CMatrix
+.SH SYNOPSIS
+.B cmatrix
+[\-abcfhlohnsmV] [\-F fps] [\-T color] [\-H color] [\-O color]
+.SH DESCRIPTION
+Shows a scrolling 'Matrix' like screen in Linux.
+.PP
+Default rain uses Unicode PUA \fBU+E000\fR–\fBU+E069\fR (106 glyphs) from a merged DejaVu font. \fBmake install\fR installs \fIDejaVuSansMono_working.ttf\fR as \fIDejaVuSansMono.ttf\fR into \fI/usr/share/fonts/truetype/\fR and runs \fBfc-cache\fR. User-local install path is \fI~/.local/share/fonts/DejaVuSansMono.ttf\fR. Set your terminal font to \fIDejaVu Sans Mono\fR so those code points render correctly.
+.PP
+For Japanese mode (\-c), the build may still install Matrix Code fonts system-wide; set your terminal to "Matrix Code" for \-c, or use Matrix Code NFI (DaFont). Console mode (\-l) uses setfont/consolechars; install a console font separately for \-l.
+.SS OPTIONS
+.TP
+.I "\-a"
+Asynchronous scroll
+.TP
+.I "\-b"
+Bold characters on
+.TP
+.I "\-B"
+All bold characters (overrides \-b)
+.TP
+.I "\-f"
+Force the linux $TERM type to be on
+.TP
+.I "\-l"
+Linux mode (uses setfont/consolechars; install a console font for \-l)
+.TP
+.I "\-o"
+Use old-style scrolling
+.TP
+.I "\-c"
+Japanese mode: draws Matrix Code glyphs (32 half-width Katakana + 95 Basic Latin, one column each) using the wide-character API. Requires UTF-8 locale and a font with those glyphs (Matrix Code is installed by the build). Set
+.B CMATRIX_ASCII_FALLBACK=1
+to use ASCII placeholders instead.
+.TP
+.I "\-L"
+Locks cmatrix, Unable to quit
+.TP
+.I "\-h, \-?"
+Print usage and exit
+.TP
+.I "\-k"
+Every characters change 
+.TP
+.I "\-n"
+No bold characters (overrides \-b)
+.TP
+.I "\-s"
+"Screensaver" mode, exits on first keystroke
+.TP
+.I "\-V"
+Print version information and exit
+.TP
+.I "\-F fps"
+Frame rate in frames per second (default 23.976; e.g. 30, 60).
+.TP
+.I "\-T color"
+Use this color for matrix tail (default green).
+Valid colors are green, red, blue, white, yellow, cyan, magenta and black.
+.TP
+.I "\-H color"
+Use this color for the drop head (default white).
+.TP
+.I "\-O color"
+Use this color for the \-M message (default red).
+.TP
+.I "\-M message"
+Add a message in the center of cmatrix
+.SS KEYSTROKES
+The following keystrokes are available during execution (unavailable in
+\-s mode)
+.TP
+.I "a"
+Toggle asynchronous scroll
+.TP
+.I "b"
+Random bold characters
+.TP
+.I "n"
+Turn off bold characters
+.TP
+.I "! @ # $ % ^ & )"
+Change the color of the matrix to the corresponding color:
+! \- red, @ \- green, # \- yellow, $ \- blue, % \- magenta, ^ \- cyan,
+& \- white, ) \- black.
+.TP
+.I "q"
+Quit the program
+.SH ENVIRONMENT
+.TP
+.B CMATRIX_ASCII_FALLBACK
+If set, \fB\-c\fR always uses ASCII placeholders (#0-9A-F).
+.TP
+.B TERM
+If \fBTERM\fR is \fIdumb\fR or unset, \fB\-c\fR is disabled and a warning is printed.
+.SH FONTS FOR JAPANESE MODE (\-c)
+Japanese mode uses 32 half-width Katakana and 95 Basic Latin code points (all single-column). The build installs Matrix Code (TrueType) to the fontconfig dir; set your terminal to "Matrix Code". Cmatrix cannot change your terminal font (only \fB\-l\fR console mode loads a font via setfont).
+.RS
+.IP "Matrix Code (installed)" 4
+Installed by \fBmake install\fR to e.g. /usr/share/fonts/truetype/cmatrix/. Set your terminal font to "Matrix Code" for \-c.
+.IP "Matrix Code NFI (DaFont)" 4
+Optional. Download from https://www.dafont.com/matrix-code-nfi.font and install; set terminal to "Matrix Code NFI".
+.IP "Testing your font" 4
+Paste in your terminal: \fIｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿ\fR. If you see boxes or replacement characters, the font does not have half-width Katakana.
+.RE
+.SH BUGS
+This program is very CPU intensive.  Don't be surprised if it eats up over
+40% of your CPU at times.
+.SH AUTHORS
+Original CMatrix by Chris Allegretta (1999\-2017) and Abishek V Ashok (2017\-Present).
+This version (fork) by shr00mie.
+.SH HOMEPAGE
+Upstream: https://github.com/abishekvashok/cmatrix
