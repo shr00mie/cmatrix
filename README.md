@@ -1,17 +1,13 @@
-<div style="background:#030f03;color:#00ff4f;padding:16px 18px;border:1px solid #00ff4f1a;border-radius:10px;">
-  <h1 style="margin:0 0 8px 0;font-size:28px;letter-spacing:0.5px;">CMatrix (Matrix rain)</h1>
-  <div style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;color:#9bffb0;">
-    Green tail + bright head. Terminal animation inspired by the classic “Matrix” rain.
-  </div>
-</div>
+# cMatrix
+[![CMake on a single platform](https://github.com/shr00mie/cmatrix/actions/workflows/cmake-single-platform.yml/badge.svg)](https://github.com/shr00mie/cmatrix/actions/workflows/cmake-single-platform.yml)
 
-## For the time being, Ubuntu only.
+For the time being, Ubuntu only.
 
 ## Clone
 
 ```bash
 cd /path/to/your/src
-git clone <repository-url> cmatrix
+git clone https://github.com/shr00mie/cmatrix.git
 cd cmatrix
 ```
 
@@ -20,7 +16,7 @@ cd cmatrix
 Run the dependency installer script:
 
 ```bash
-bash data/install-dependencies.sh
+./data/install-dependencies.sh
 ```
 
 ## Compile via CMake
@@ -28,8 +24,8 @@ bash data/install-dependencies.sh
 ```bash
 mkdir -p build
 cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-cmake --build . -j
+cmake ..
+make
 ```
 
 ## Install
@@ -37,7 +33,7 @@ cmake --build . -j
 The install step may require `sudo` because it installs system fonts / refreshes font cache:
 
 ```bash
-sudo cmake --install .
+sudo make install
 ```
 
 After install, update your terminal *profile font* to the patched `DejaVu Sans Mono` (your “DejaVuSansMono”).
@@ -70,10 +66,6 @@ Common flags (from `cmatrix -h` / `cmatrix.1`):
 - `-H color` : drop head color (default white). Valid: `green, red, blue, white, yellow, cyan, magenta, black`
 - `-O color` : message color (default red). Valid: `green, red, blue, white, yellow, cyan, magenta, black`
 - `-M message` : add a centered message
-
-Environment variable:
-
-- `CMATRIX_ASCII_FALLBACK=1` : forces `-c` to use ASCII placeholders (`#0-9A-F`) instead of the Matrix Code glyphs.
 
 ## Uninstall script location
 
