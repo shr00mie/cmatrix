@@ -22,13 +22,17 @@
 
 */
 
-#define NCURSES_WIDECHAR 1
+/* clock_nanosleep, strcasecmp, etc. on glibc */
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
+#endif
 
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <strings.h>
+#include <stdint.h>
 #include <time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -36,26 +40,152 @@
 #include <signal.h>
 #include <locale.h>
 #include <math.h>
+#include <pthread.h>
+#include <semaphore.h>
+
+#include <notcurses/notcurses.h>
 
 #ifndef EXCLUDE_CONFIG_H
 #include "config.h"
 #endif
 
 #include "cmatrix.h"
-
-#ifdef HAVE_STRINGS_H
-#include <strings.h>
-#endif
+#include "matrix_rain_glyphs.h"
 
 #ifdef HAVE_GETOPT_H
 #include <getopt.h>
 #endif
 
-#ifdef HAVE_NCURSES_H
-#include <ncurses.h>
-#else
-#include <curses.h>
+/* Legacy ncurses color indices (0–7) for matrix cell sweegie_base_color and -T/-H/-O. */
+#ifndef COLOR_BLACK
+#define COLOR_BLACK     0
+#define COLOR_RED       1
+#define COLOR_GREEN     2
+#define COLOR_YELLOW    3
+#define COLOR_BLUE      4
+#define COLOR_MAGENTA   5
+#define COLOR_CYAN      6
+#define COLOR_WHITE     7
 #endif
+/* Sweegie / CLI: RGB from hex or non-legacy name (not a small palette index). */
+#define COLOR_HEAD_RGB     8
+#define COLOR_CUSTOM_TAIL  9
+#define COLOR_CUSTOM_MSG   10
+
+typedef struct {
+    const char *name;
+    uint32_t rgb;
+    int legacy; /* COLOR_BLACK..COLOR_WHITE or -1 */
+} cmatrix_named_color_t;
+
+/* Help legend order: hue wheel (red → yellow → green → cyan/blue → magenta/pink).
+ * Name lookup is a linear scan; order does not affect -T/-H/-O parsing. */
+static const cmatrix_named_color_t cmatrix_named_colors[] = {
+    { "maroon",     0x800000u, -1 },
+    { "red",        0xff0000u, COLOR_RED },
+    { "coral",      0xff7f50u, -1 },
+    { "orange",     0xffa500u, -1 },
+    { "gold",       0xffd700u, -1 },
+    { "yellow",     0xffff00u, COLOR_YELLOW },
+    { "chartreuse", 0x7fff00u, -1 },
+    /* Single canonical trail green (Matrix / lime / springgreen merged here). */
+    { "green",      0x00ff41u, COLOR_GREEN },
+    { "mint",       0xc3ffbfu, -1 },
+    { "olive",      0x808000u, -1 },
+    { "wheat",      0xf5deb3u, -1 },
+    { "turquoise",  0x40e0d0u, -1 },
+    { "cyan",       0x00ffffu, COLOR_CYAN },
+    { "teal",       0x008080u, -1 },
+    { "steelblue",  0x4682b4u, -1 },
+    { "blue",       0x0000ffu, COLOR_BLUE },
+    { "indigo",     0x4b0082u, -1 },
+    { "lavender",   0xe6e6fau, -1 },
+    { "magenta",    0xff00ffu, COLOR_MAGENTA },
+    { "pink",       0xda70d6u, -1 },
+};
+
+#define CMATRIX_NAMED_COLOR_COUNT \
+    (sizeof(cmatrix_named_colors) / sizeof(cmatrix_named_colors[0]))
+
+/* Truecolor: leading '#' required (#RRGGBB). */
+static int parse_rgb_hex_optarg(const char *s, uint32_t *out_rgb) {
+    const char *p = s;
+    unsigned val;
+    int i;
+    if (!s || s[0] != '#')
+        return 0;
+    p = s + 1;
+    if (strlen(p) != 6u)
+        return 0;
+    val = 0;
+    for (i = 0; i < 6; i++) {
+        char c = p[i];
+        unsigned d;
+        if (c >= '0' && c <= '9')
+            d = (unsigned)(c - '0');
+        else if (c >= 'a' && c <= 'f')
+            d = 10u + (unsigned)(c - 'a');
+        else if (c >= 'A' && c <= 'F')
+            d = 10u + (unsigned)(c - 'A');
+        else
+            return 0;
+        val = (val << 4) | d;
+    }
+    *out_rgb = val;
+    return 1;
+}
+
+void cmatrix_print_named_color_legend(void) {
+    const unsigned ncols = 4u;
+    size_t i, maxw = 0, colw, pad;
+    printf(
+        "\n Named colors (-T tail, -H head, -O message) or truecolor "
+        "#RRGGBB:\n");
+    for (i = 0; i < CMATRIX_NAMED_COLOR_COUNT; i++) {
+        size_t w = strlen(cmatrix_named_colors[i].name);
+        if (w > maxw)
+            maxw = w;
+    }
+    colw = maxw + 2u;
+    for (i = 0; i < CMATRIX_NAMED_COLOR_COUNT; i++) {
+        uint32_t rgb = cmatrix_named_colors[i].rgb;
+        unsigned r = (unsigned)((rgb >> 16) & 0xffu);
+        unsigned g = (unsigned)((rgb >> 8) & 0xffu);
+        unsigned b = (unsigned)(rgb & 0xffu);
+        const char *nm = cmatrix_named_colors[i].name;
+        if (i % (size_t)ncols == 0u)
+            printf("  ");
+        if (r < 48u && g < 48u && b < 48u)
+            printf("\033[38;2;160;160;160m%s\033[0m", nm);
+        else
+            printf("\033[38;2;%u;%u;%um%s\033[0m", r, g, b, nm);
+        pad = colw - strlen(nm);
+        for (; pad > 0u; pad--)
+            putchar(' ');
+        if ((i + 1u) % (size_t)ncols == 0u)
+            printf("\n");
+    }
+    if (CMATRIX_NAMED_COLOR_COUNT % (size_t)ncols != 0u)
+        printf("\n");
+}
+
+/* Return 0 on success: *rgb_out and *legacy_out (-1 = use CUSTOM / HEAD_RGB). */
+static int cmatrix_parse_color_optarg(const char *optarg, uint32_t *rgb_out,
+    int *legacy_out) {
+    size_t i;
+    if (parse_rgb_hex_optarg(optarg, rgb_out)) {
+        *legacy_out = -1;
+        return 0;
+    }
+    for (i = 0; i < CMATRIX_NAMED_COLOR_COUNT; i++) {
+        if (!strcasecmp(optarg, cmatrix_named_colors[i].name)) {
+            *rgb_out = cmatrix_named_colors[i].rgb;
+            *legacy_out = cmatrix_named_colors[i].legacy;
+            return 0;
+        }
+    }
+    return -1;
+}
 
 #ifdef HAVE_SYS_IOCTL_H
 #include <sys/ioctl.h>
@@ -188,24 +318,40 @@ static int screen_lines = 24;
 static int screen_cols = 80;
 volatile sig_atomic_t signal_status = 0; /* Indicates a caught signal */
 
+struct notcurses *cmatrix_nc = NULL;
+static struct ncplane *cmatrix_plane = NULL;
+
+/* Snapshot of matrix at frame start: workers read neighbors from here, write live matrix. */
+static cmatrix *matrix_snap = NULL;
+
+#define CMATRIX_MAX_WORKERS 8
+static int cmatrix_num_workers = 1;
+static pthread_t cmatrix_worker_threads[CMATRIX_MAX_WORKERS];
+static sem_t cmatrix_sem_start[CMATRIX_MAX_WORKERS];
+static sem_t cmatrix_sem_done[CMATRIX_MAX_WORKERS];
+static volatile int cmatrix_workers_running = 0;
+static pthread_mutex_t cmatrix_spawn_mx = PTHREAD_MUTEX_INITIALIZER;
+
+struct cmatrix_worker_arg {
+    int thread_id;
+    int num_workers;
+    unsigned int rng;
+};
+
+static struct cmatrix_worker_arg cmatrix_worker_args[CMATRIX_MAX_WORKERS];
+
 /* Per-character -M message state: visible[] and wasOnMessage[] (sized to message length).
  * Spaces in the message are not treated as message characters (no reveal tracking, rain passes through). */
 #define MSG_STATE_MAX 512
 static unsigned char msg_visible[MSG_STATE_MAX];
 static unsigned char msg_was_on_message[MSG_STATE_MAX];
-/* Pair ids used for deterministic green fade ramp (source -> black). */
-#define SWEEGIE_FADE_STEPS 16
-static int tail_fade_pairs[SWEEGIE_FADE_STEPS];
-static int tail_fade_ready = 0;
-
-/* Dirty tracking: previous-frame buffer and per-line dirty for wnoutrefresh/doupdate. */
+/* Dirty tracking: previous-frame buffer; only changed cells go to ncplane. */
 typedef struct {
-    int ch;     /* codepoint or ASCII (e.g. ' ', '#' or U+FF66..U+FF9D) */
-    int color;  /* head_color, tail_color, or message_color */
-    int attrs;  /* ncurses attrs (A_BOLD/A_DIM/...) */
+    int ch;           /* codepoint or ASCII */
+    uint32_t fg_rgb;  /* 0x00RRGGBB foreground */
+    unsigned char bold;
 } rendered_cell;
 static rendered_cell *prev_cell = NULL;
-static unsigned char *dirty_lines = NULL;
 /* After var_init/resize, draw every cell once (keyframe). Then skip columns whose
  * simulation did not run and which do not carry -M message (inter-frame skip). */
 static int full_redraw_pending = 1;
@@ -215,23 +361,51 @@ static int msg_spawns_since_unrevealed = 0;
 /* Avoid spawning consecutive drops in the same column (aesthetics). */
 static int last_spawn_col = -1;
 
-#if defined(NCURSES_WIDECHAR) && defined(NCURSES_VERSION)
-/* ---------------------------------------------------------------------------
- * Output one wide character (used for -c / classic Japanese mode). Uses
- * add_wch + cchar_t for stability; addwstr/addnwstr can segfault when rain
- * hits the bottom. Half-width katakana (U+FF66..U+FF9D) are one column each.
- * See docs/HALFWIDTH_KATAKANA_RESEARCH.md for the full spec and references.
- * --------------------------------------------------------------------------- */
-static int add_wide_char(wchar_t wc) {
-    cchar_t cchar;
-    wchar_t wbuf[2] = { wc, L'\0' };
-    memset(&cchar, 0, sizeof(cchar));  /* avoid garbage in opaque struct on some ncurses */
-    if (setcchar(&cchar, wbuf, A_NORMAL, 0, NULL) != OK)
-        return ERR;
-    return add_wch(&cchar);
+static unsigned int cmatrix_main_rng = 1;
+
+static void cmatrix_stop_workers(void);
+
+void cmatrix_notcurses_stop(void) {
+    cmatrix_stop_workers();
+    if (cmatrix_nc) {
+        notcurses_stop(cmatrix_nc);
+        cmatrix_nc = NULL;
+        cmatrix_plane = NULL;
+    }
 }
 
-/* Encode BMP codepoint (0..0xFFFF) to UTF-8. Returns length; buf must have at least 4 bytes. */
+/* Standard palette -> RGB (matches typical terminal colors; tail green is Matrix #00FF41). */
+static uint32_t cmatrix_palette_rgb(int color_idx) {
+    switch (color_idx) {
+    case COLOR_BLACK:   return 0x000000u;
+    case COLOR_RED:     return 0xff0000u;
+    case COLOR_GREEN:   return 0x00ff41u;
+    case COLOR_YELLOW:  return 0xffff00u;
+    case COLOR_BLUE:    return 0x0000ffu;
+    case COLOR_MAGENTA: return 0xff00ffu;
+    case COLOR_CYAN:    return 0x00ffffu;
+    case COLOR_WHITE:   return 0xffffffu;
+    case COLOR_HEAD_RGB:
+        return 0xffffffu; /* rgb_head set separately when this sentinel is used */
+    case COLOR_CUSTOM_TAIL:
+    case COLOR_CUSTOM_MSG:
+        return 0x808080u; /* rgb_tail / rgb_msg hold real values */
+    default:            return 0x00ff41u;
+    }
+}
+
+static uint32_t rgb_lerp_to_black(uint32_t fg, unsigned char fade_amt) {
+    unsigned fr = (unsigned)((fg >> 16) & 0xffu);
+    unsigned fg_g = (unsigned)((fg >> 8) & 0xffu);
+    unsigned fb = (unsigned)(fg & 0xffu);
+    unsigned t = 255u - (unsigned)fade_amt;
+    fr = (fr * t) / 255u;
+    fg_g = (fg_g * t) / 255u;
+    fb = (fb * t) / 255u;
+    return ((uint32_t)fr << 16) | ((uint32_t)fg_g << 8) | (uint32_t)fb;
+}
+
+/* Encode BMP codepoint (0..0xFFFF) to UTF-8 for ncplane_putegc (UTF-8 locale). */
 static int codepoint_to_utf8(unsigned int u, unsigned char *buf) {
     if (u <= 0x7F) {
         buf[0] = (unsigned char)u;
@@ -250,42 +424,45 @@ static int codepoint_to_utf8(unsigned int u, unsigned char *buf) {
     }
     return 0;
 }
-#endif
 
 /* ---------------------------------------------------------------------------
- * Non-message (rain): 104 merged Matrix glyphs in DejaVuSansMono_patched.ttf.
- * Same order as glyph grid nonempty index 1962–2065: PUA U+E000–U+E067.
- * Terminal uses font cmap only.
+ * Non-message (rain): Matrix glyph locations (PUA) from patched font.
  * --------------------------------------------------------------------------- */
-#define MATRIX_FIRST 0xE000
-#define MATRIX_LAST  0xE067
-#define MATRIX_CODE_GLYPHS 104
+#define MATRIX_FIRST ((int)matrix_rain_codepoints[0])
+#define MATRIX_LAST  ((int)matrix_rain_codepoints[MATRIX_RAIN_GLYPH_COUNT - 1])
 
 /* ---------------------------------------------------------------------------
  * Return a random character for matrix[row][col] that is not equal to any
  * value in the 8 adjacent cells (vertical, horizontal, diagonal). Retries
  * up to 50 times; then returns a random character anyway to avoid infinite loop.
  * --------------------------------------------------------------------------- */
-static int random_char_avoiding_neighbors(int row, int col) {
+static int random_char_avoiding_neighbors(int row, int col, unsigned int *rng, cmatrix *src) {
     int adj[8], n_adj = 0;
     int dr[] = { -1, -1, -1,  0, 0,  1, 1, 1 };
     int dc[] = { -1,  0,  1, -1, 1, -1, 0, 1 };
     int d;
+    if (src == NULL)
+        src = matrix[0];
     for (d = 0; d < 8; d++) {
         int r = row + dr[d], c = col + dc[d];
-        if (r >= 0 && r <= screen_lines && c >= 0 && c < screen_cols && matrix != NULL)
-            adj[n_adj++] = matrix[r][c].val;
+        if (r >= 0 && r <= screen_lines + 1 && c >= 0 && c < screen_cols && src != NULL)
+            adj[n_adj++] = src[r * screen_cols + c].val;
     }
     for (d = 0; d < 50; d++) {
-        int val = MATRIX_FIRST + (int) (rand() % MATRIX_CODE_GLYPHS);
+        int val = (int)matrix_rain_codepoints[(unsigned)rand_r(rng) % (unsigned)MATRIX_RAIN_GLYPH_COUNT];
         int ok = 1;
         int a;
-        for (a = 0; a < n_adj; a++)
-            if (val == adj[a]) { ok = 0; break; }
+        for (a = 0; a < n_adj; a++) {
+            int adjv = adj[a];
+            if (adjv == val) {
+                ok = 0;
+                break;
+            }
+        }
         if (ok)
             return val;
     }
-    return MATRIX_FIRST + (int) (rand() % MATRIX_CODE_GLYPHS);
+    return (int)matrix_rain_codepoints[(unsigned)rand_r(rng) % (unsigned)MATRIX_RAIN_GLYPH_COUNT];
 }
 
 static unsigned char sweegie_fade_for_distance(int window_len, int dist_from_head) {
@@ -311,29 +488,17 @@ static unsigned char sweegie_fade_for_distance(int window_len, int dist_from_hea
     return (unsigned char) fade;
 }
 
-static int tail_fade_pair_for_amount(unsigned char fade_amt, int fallback_pair) {
-    int idx;
-    if (!tail_fade_ready)
-        return fallback_pair;
-    idx = (int)((fade_amt * (SWEEGIE_FADE_STEPS - 1)) / 255);
-    if (idx < 0)
-        idx = 0;
-    if (idx >= SWEEGIE_FADE_STEPS)
-        idx = SWEEGIE_FADE_STEPS - 1;
-    return tail_fade_pairs[idx];
-}
-
-static int rand_inclusive(int lo, int hi) {
+static int rand_inclusive(int lo, int hi, unsigned int *rng) {
     if (hi < lo)
         return lo;
-    return lo + (int)(rand() % (hi - lo + 1));
+    return lo + (int)(rand_r(rng) % (unsigned)(hi - lo + 1));
 }
 
 static int column_has_previous_tail(int col) {
     int r;
     if (matrix == NULL || col < 0 || col >= screen_cols)
         return 0;
-    for (r = 0; r <= screen_lines; r++) {
+    for (r = 0; r <= screen_lines + 1; r++) {
         int v = matrix[r][col].val;
         if (v != -1 && v != ' ')
             return 1;
@@ -357,7 +522,7 @@ static int spec_tail_length_for_clear_column(void) {
         lo = 3;
     if (hi < lo)
         hi = lo;
-    return rand_inclusive(lo, hi);
+    return rand_inclusive(lo, hi, &cmatrix_main_rng);
 }
 
 /* Spec (updated): sweegie in [3, 1/2 * available] when previous tail exists. */
@@ -366,19 +531,19 @@ static int spec_sweegie_length_for_tailed_column(void) {
     int hi = avail / 2;
     if (hi < 3)
         hi = 3;
-    return rand_inclusive(3, hi);
+    return rand_inclusive(3, hi, &cmatrix_main_rng);
 }
 
 static void spec_prepare_spawn_in_column(int col) {
     int had_tail = column_has_previous_tail(col);
     if (col < 0 || col >= screen_cols)
         return;
-    spaces[col] = (int) rand() % screen_lines + 1;
+    spaces[col] = (int)rand_r(&cmatrix_main_rng) % screen_lines + 1;
     length[col] = spec_tail_length_for_clear_column();
     /* Per-column async speed (rows/sec), randomized on spawn. */
     if (col_speed_rps != NULL && col_row_accum != NULL) {
-        int whole = rand_inclusive(10, 23);
-        int frac = rand() % 100;
+        int whole = rand_inclusive(10, 23, &cmatrix_main_rng);
+        int frac = rand_r(&cmatrix_main_rng) % 100;
         col_speed_rps[col] = (float)whole + (float)frac / 100.0f;
         col_row_accum[col] = 0.0f;
     }
@@ -392,7 +557,7 @@ static void spec_prepare_spawn_in_column(int col) {
     }
 
     /* Spec: new drop starts in newly unlocked column immediately. */
-    matrix[1][col].val = random_char_avoiding_neighbors(1, col);
+    matrix[1][col].val = random_char_avoiding_neighbors(1, col, &cmatrix_main_rng, matrix[0]);
     matrix[1][col].is_head = true;
     matrix[1][col].sweegie_fade = 0;
     matrix[1][col].sweegie_base_color = (unsigned char)COLOR_GREEN;
@@ -444,7 +609,7 @@ static void unlock_one_column_and_spawn(const char *msg, int msg_len, int msg_y)
 
     /* Preserve existing -M bias behavior; runtime-option parsing untouched. */
     if (msg_len > 0 && nunrevealed > 0 && msg_spawns_since_unrevealed >= 2) {
-        r = rand() % eligible_unrevealed;
+        r = (int)rand_r(&cmatrix_main_rng) % eligible_unrevealed;
         for (k = 0; k < screen_cols; k++) {
             if (!column_active[k] && k >= msg_y && k < msg_y + msg_len) {
                 int mk = k - msg_y;
@@ -459,7 +624,7 @@ static void unlock_one_column_and_spawn(const char *msg, int msg_len, int msg_y)
         }
         msg_spawns_since_unrevealed = 0;
     } else {
-        r = rand() % eligible_locked;
+        r = (int)rand_r(&cmatrix_main_rng) % eligible_locked;
         for (k = 0; k < screen_cols; k++) {
             if (!column_active[k]) {
                 if (eligible_locked < nlocked && k == last_spawn_col)
@@ -492,11 +657,16 @@ static void unlock_one_column_and_spawn(const char *msg, int msg_len, int msg_y)
  * dirty tracking: compare return value to prev_cell to skip unchanged cells.
  * --------------------------------------------------------------------------- */
 static rendered_cell get_rendered_cell(int i, int j, const char *msg, int msg_len, int msg_row, int msg_y,
-    int bold, int head_color, int tail_color, int message_color, int use_ascii_fallback)
+    int bold, int head_color, int tail_color, int message_color, int use_ascii_fallback,
+    uint32_t rgb_head, uint32_t rgb_tail, uint32_t rgb_msg)
 {
-    rendered_cell r = { .ch = ' ', .color = tail_color, .attrs = 0 };
+    rendered_cell r = { .ch = ' ', .fg_rgb = rgb_tail, .bold = 0 };
     int mk = -1;
     int is_msg_cell = 0;
+    (void)head_color;
+    (void)tail_color;
+    (void)message_color;
+    (void)use_ascii_fallback;
     if (msg_len > 0 && i == msg_row && j >= msg_y && j < msg_y + msg_len) {
         mk = j - msg_y;
         if (mk >= 0 && mk < msg_len && mk < MSG_STATE_MAX && msg[mk] != ' ')
@@ -506,27 +676,27 @@ static rendered_cell get_rendered_cell(int i, int j, const char *msg, int msg_le
         return r;
     {
         int idx = i * screen_cols + j;
-        int max_cell = (screen_lines + 1) * screen_cols - 1;
+        int max_cell = (screen_lines + 2) * screen_cols - 1;
         if (!is_msg_cell && (idx < 0 || idx > max_cell))
             return r;
         cmatrix cell = matrix[0][idx];
         if (is_msg_cell && mk >= 0 && mk < MSG_STATE_MAX) {
             if (cell.is_head) {
                 r.ch = (unsigned char)msg[mk];
-                r.color = head_color;
-                r.attrs = A_BOLD;
+                r.fg_rgb = rgb_head;
+                r.bold = 1;
                 return r;
             }
             if (msg_was_on_message[mk]) {
                 r.ch = (unsigned char)msg[mk];
-                r.color = message_color;
-                r.attrs = A_BOLD;
+                r.fg_rgb = rgb_msg;
+                r.bold = 1;
                 return r;
             }
             if (msg_visible[mk]) {
                 r.ch = (unsigned char)msg[mk];
-                r.color = message_color;
-                r.attrs = A_BOLD;
+                r.fg_rgb = rgb_msg;
+                r.bold = 1;
                 return r;
             }
             /* unrevealed: fall through to matrix cell */
@@ -534,80 +704,288 @@ static rendered_cell get_rendered_cell(int i, int j, const char *msg, int msg_le
         /* Matrix cell (head or trail, or unrevealed message cell) */
         if (cell.val == -1) {
             r.ch = ' ';
-            r.color = cell.is_head ? head_color : tail_color;
-            r.attrs = cell.is_head ? (bold ? A_BOLD : 0) : 0;
+            r.fg_rgb = cell.is_head ? rgb_head : rgb_tail;
+            r.bold = cell.is_head ? (bold ? 1 : 0) : 0;
             return r;
         }
         {
             int v = cell.val;
-            if (v >= MATRIX_FIRST && v <= MATRIX_LAST) {
+            if (v >= MATRIX_FIRST && v <= MATRIX_LAST)
                 r.ch = v;
-            } else if (v > 127) {
+            else if (v > 127)
                 r.ch = '#';
-            } else {
+            else
                 r.ch = v;
-            }
             if (!cell.is_head && cell.sweegie_fade > 0) {
-                /* Deterministic incremental fade using explicit ncurses color ramp pairs. */
-                int base_color = (cell.sweegie_base_color <= COLOR_WHITE) ? (int)cell.sweegie_base_color : tail_color;
-                if (base_color == COLOR_GREEN)
-                    r.color = tail_fade_pair_for_amount(cell.sweegie_fade, tail_color);
+                int base_color;
+                if ((int)cell.sweegie_base_color == COLOR_HEAD_RGB)
+                    base_color = COLOR_HEAD_RGB;
+                else if (cell.sweegie_base_color <= COLOR_WHITE)
+                    base_color = (int)cell.sweegie_base_color;
                 else
-                    r.color = (cell.sweegie_fade >= 200) ? COLOR_BLACK : base_color;
-                r.attrs = 0;
+                    base_color = tail_color;
+                if (base_color == COLOR_GREEN || base_color == COLOR_CUSTOM_TAIL)
+                    r.fg_rgb = rgb_lerp_to_black(rgb_tail, cell.sweegie_fade);
+                else if (base_color == COLOR_HEAD_RGB)
+                    r.fg_rgb = rgb_lerp_to_black(rgb_head, cell.sweegie_fade);
+                else if (cell.sweegie_fade >= 200)
+                    r.fg_rgb = 0x000000u;
+                else
+                    r.fg_rgb = rgb_lerp_to_black(cmatrix_palette_rgb(base_color), cell.sweegie_fade);
+                r.bold = 0;
             } else {
-                r.color = cell.is_head ? head_color : tail_color;
-                r.attrs = cell.is_head ? (bold ? A_BOLD : 0) : ((bold && (v % 2 == 0)) ? A_BOLD : 0);
+                r.fg_rgb = cell.is_head ? rgb_head : rgb_tail;
+                r.bold = cell.is_head ? (bold ? 1 : 0) : ((bold && (v % 2 == 0)) ? 1 : 0);
             }
             return r;
         }
     }
 }
 
-/* ---------------------------------------------------------------------------
- * Draw a single rendered_cell at (line, col). No state updates; caller
- * updates msg_was_on_message / msg_visible when drawing message cells.
- * --------------------------------------------------------------------------- */
-static void draw_cell_at(int line, int col, const rendered_cell *r, int use_ascii_fallback)
+/* Draw a single cell on the standard plane (truecolor + optional bold). */
+static void draw_cell_at(struct ncplane *n, int line, int col, const rendered_cell *r, int use_ascii_fallback)
 {
-    move(line, col);
-    if (console)
-        attron(A_ALTCHARSET);
-    attron(COLOR_PAIR(r->color));
-    if (r->attrs)
-        attron(r->attrs);
+    unsigned tr = (unsigned)((r->fg_rgb >> 16) & 0xffu);
+    unsigned tg = (unsigned)((r->fg_rgb >> 8) & 0xffu);
+    unsigned tb = (unsigned)(r->fg_rgb & 0xffu);
+    (void)ncplane_set_fg_rgb8(n, tr, tg, tb);
+    if (r->bold)
+        ncplane_set_styles(n, NCSTYLE_BOLD);
+    else
+        ncplane_set_styles(n, NCSTYLE_NONE);
     if (r->ch == ' ') {
-        addch(' ');
+        (void)ncplane_putegc_yx(n, line, col, " ", NULL);
     } else if (r->ch >= MATRIX_FIRST && r->ch <= MATRIX_LAST) {
-#if defined(NCURSES_WIDECHAR) && defined(NCURSES_VERSION)
-        /* Emit UTF-8 for PUA so the terminal gets the same bytes as printf "\U...".
-         * add_wch can cause the terminal to use a different font (e.g. with bold/color). */
-        if (!use_ascii_fallback) {
-            unsigned char ubuf[4];
-            int n = codepoint_to_utf8((unsigned int)r->ch, ubuf);
-            if (n > 0) {
-                ubuf[n] = '\0';
-                addstr((const char *)ubuf);
-            } else
-                addch((chtype)'#');
-        } else
-            addch((chtype)'#');
-#else
-        addch((chtype)(unsigned char)r->ch);
-#endif
+        /* No fallback: always render Matrix glyph locations directly. */
+        unsigned char ubuf[8];
+        int nbytes = codepoint_to_utf8((unsigned int)r->ch, ubuf);
+        if (nbytes > 0) {
+            ubuf[nbytes] = '\0';
+            (void)ncplane_putegc_yx(n, line, col, (const char *)ubuf, NULL);
+        } else {
+            (void)ncplane_putegc_yx(n, line, col, "?", NULL);
+        }
     } else {
-        addch((chtype)(r->ch > 127 ? '#' : (unsigned char)r->ch));
+        char one[8];
+        one[0] = (char)(r->ch > 127 ? '#' : (unsigned char)r->ch);
+        one[1] = '\0';
+        (void)ncplane_putegc_yx(n, line, col, one, NULL);
     }
-    if (r->attrs)
-        attroff(r->attrs);
-    attroff(COLOR_PAIR(r->color));
-    if (console)
-        attroff(A_ALTCHARSET);
+}
+
+/* Per-frame simulation globals (main sets before waking worker threads). */
+static int gsim_pause;
+static int gsim_asynch;
+static int gsim_delay_ms;
+static int gsim_changes;
+static int gsim_head_color;
+static int gsim_tail_color;
+static int gsim_bold;
+static const char *gsim_msg;
+static int gsim_msg_len;
+static int gsim_msg_row;
+static int gsim_msg_y;
+
+static void run_column_simulation(int j,
+    int head_color, int tail_color, int bold,
+    unsigned int *rng)
+{
+    int i, y, z, firstcoldone;
+    if (matrix == NULL || j < 0 || j >= screen_cols)
+        return;
+    if (gsim_pause == 0 && column_active != NULL && column_active[j]) {
+        int steps = 0;
+        if (gsim_asynch == 0) {
+            steps = 1;
+        } else if (col_speed_rps != NULL && col_row_accum != NULL) {
+            double dt = (double)gsim_delay_ms / 1000.0;
+            if (dt < 0.0)
+                dt = 0.0;
+            col_row_accum[j] += col_speed_rps[j] * (float)dt;
+            if (col_row_accum[j] >= 1.0f) {
+                steps = (int)col_row_accum[j];
+                if (steps > 3)
+                    steps = 3;
+                col_row_accum[j] -= (float)steps;
+            }
+        }
+        while (steps-- > 0 && column_active[j]) {
+            i = 0;
+            y = 0;
+            firstcoldone = 0;
+            while (i <= screen_lines + 1) {
+                if (i < 0 || i > screen_lines + 1)
+                    break;
+                while (i <= screen_lines + 1) {
+                    int v = (i >= 0 && i <= screen_lines + 1) ? matrix[i][j].val : -1;
+                    if (v != ' ' && v != -1)
+                        break;
+                    i++;
+                }
+
+                if (i > screen_lines + 1) {
+                    break;
+                }
+
+                z = i;
+                y = 0;
+                while (i <= screen_lines + 1) {
+                    if (i < 0 || i > screen_lines + 1)
+                        break;
+                    {
+                        int v = matrix[i][j].val;
+                        if (v == ' ' || v == -1)
+                            break;
+                    }
+                    matrix[i][j].is_head = false;
+                    if (gsim_changes) {
+                        if (rand_r(rng) % 8 == 0) {
+                            matrix[i][j].val = random_char_avoiding_neighbors(i, j, rng, matrix_snap);
+                            matrix[i][j].sweegie_fade = 0;
+                        }
+                    }
+                    i++;
+                    y++;
+                }
+
+                if (i > screen_lines + 1) {
+                    if (!firstcoldone && column_active != NULL) {
+                        column_active[j] = 0;
+                        if (active_col_count > 0)
+                            active_col_count--;
+                        pthread_mutex_lock(&cmatrix_spawn_mx);
+                        unlock_one_column_and_spawn(gsim_msg, gsim_msg_len, gsim_msg_y);
+                        pthread_mutex_unlock(&cmatrix_spawn_mx);
+                        break;
+                    }
+                    continue;
+                }
+
+                if (i == screen_lines) {
+                    matrix[screen_lines][j].val = random_char_avoiding_neighbors(screen_lines, j, rng, matrix_snap);
+                    matrix[screen_lines][j].is_head = false;
+                    matrix[screen_lines][j].sweegie_fade = 0;
+                    matrix[screen_lines][j].sweegie_base_color = (unsigned char)tail_color;
+                    matrix[screen_lines][j].sweegie_base_bold = 0;
+                    i = screen_lines + 1;
+                }
+
+                if (i >= 0 && i <= screen_lines + 1) {
+                    matrix[i][j].val = random_char_avoiding_neighbors(i, j, rng, matrix_snap);
+                    matrix[i][j].is_head = true;
+                    matrix[i][j].sweegie_fade = 0;
+                    matrix[i][j].sweegie_base_color = (unsigned char)head_color;
+                    matrix[i][j].sweegie_base_bold = (unsigned char)(bold ? 1 : 0);
+                    if (column_clear_buffer != NULL && column_clear_buffer[j] > 0 && !firstcoldone) {
+                        int r, cb = column_clear_buffer[j];
+                        int effective_cb = (screen_lines - i) < cb ? (screen_lines - i) : cb;
+                        if (effective_cb < 0)
+                            effective_cb = 0;
+                        for (r = 1; r <= effective_cb && i + r <= screen_lines; r++) {
+                            int rr = i + r;
+                            if (matrix[rr][j].val == -1 || matrix[rr][j].is_head)
+                                continue;
+                            if (r == 1) {
+                                matrix[rr][j].val = -1;
+                                matrix[rr][j].is_head = false;
+                                matrix[rr][j].sweegie_fade = 0;
+                                matrix[rr][j].sweegie_base_color = (unsigned char)tail_color;
+                                matrix[rr][j].sweegie_base_bold = 0;
+                            } else {
+                                unsigned char target_fade = sweegie_fade_for_distance(effective_cb, r);
+                                if (matrix[rr][j].sweegie_fade == 0) {
+                                    matrix[rr][j].sweegie_base_color = (unsigned char)tail_color;
+                                    matrix[rr][j].sweegie_base_bold = (unsigned char)((bold && (matrix[rr][j].val % 2 == 0)) ? 1 : 0);
+                                }
+                                if (matrix[rr][j].sweegie_fade < target_fade)
+                                    matrix[rr][j].sweegie_fade = target_fade;
+                            }
+                        }
+                    }
+                }
+
+                if (y > length[j] || firstcoldone) {
+                    if (z >= 0 && z <= screen_lines && !firstcoldone) {
+                        matrix[z][j].val = ' ';
+                        matrix[z][j].sweegie_fade = 0;
+                        matrix[z][j].sweegie_base_color = (unsigned char)tail_color;
+                        matrix[z][j].sweegie_base_bold = 0;
+                        if (i > screen_lines + 1) {
+                            matrix[0][j].val = -1;
+                            matrix[0][j].sweegie_fade = 0;
+                            matrix[0][j].sweegie_base_color = (unsigned char)tail_color;
+                            matrix[0][j].sweegie_base_bold = 0;
+                        }
+                    } else if (firstcoldone) {
+                        matrix[0][j].val = -1;
+                        matrix[0][j].sweegie_fade = 0;
+                        matrix[0][j].sweegie_base_color = (unsigned char)tail_color;
+                        matrix[0][j].sweegie_base_bold = 0;
+                    }
+                }
+                firstcoldone = 1;
+                i++;
+            }
+        }
+    }
+}
+
+static void *cmatrix_worker_main(void *arg) {
+    struct cmatrix_worker_arg *wa = (struct cmatrix_worker_arg *)arg;
+    int j;
+    while (cmatrix_workers_running) {
+        if (sem_wait(&cmatrix_sem_start[wa->thread_id]) != 0)
+            break;
+        if (!cmatrix_workers_running) {
+            (void)sem_post(&cmatrix_sem_done[wa->thread_id]);
+            break;
+        }
+        for (j = wa->thread_id; j < screen_cols; j += wa->num_workers) {
+            run_column_simulation(j, gsim_head_color, gsim_tail_color, gsim_bold, &wa->rng);
+        }
+        (void)sem_post(&cmatrix_sem_done[wa->thread_id]);
+    }
+    return NULL;
+}
+
+static void cmatrix_stop_workers(void) {
+    int w;
+    if (cmatrix_num_workers <= 0)
+        return;
+    cmatrix_workers_running = 0;
+    for (w = 0; w < cmatrix_num_workers; w++)
+        (void)sem_post(&cmatrix_sem_start[w]);
+    for (w = 0; w < cmatrix_num_workers; w++)
+        (void)pthread_join(cmatrix_worker_threads[w], NULL);
+    for (w = 0; w < cmatrix_num_workers; w++) {
+        (void)sem_destroy(&cmatrix_sem_start[w]);
+        (void)sem_destroy(&cmatrix_sem_done[w]);
+    }
+    cmatrix_num_workers = 0;
+}
+
+static void cmatrix_start_workers(void) {
+    int w;
+    cmatrix_num_workers = CMATRIX_MAX_WORKERS;
+    if (cmatrix_num_workers > screen_cols)
+        cmatrix_num_workers = screen_cols;
+    if (cmatrix_num_workers < 1)
+        cmatrix_num_workers = 1;
+    cmatrix_workers_running = 1;
+    for (w = 0; w < cmatrix_num_workers; w++) {
+        (void)sem_init(&cmatrix_sem_start[w], 0, 0);
+        (void)sem_init(&cmatrix_sem_done[w], 0, 0);
+        cmatrix_worker_args[w].thread_id = w;
+        cmatrix_worker_args[w].num_workers = cmatrix_num_workers;
+        cmatrix_worker_args[w].rng = (unsigned int)(time(NULL) ^ (unsigned int)(w * 0x9e3779b9u));
+        (void)pthread_create(&cmatrix_worker_threads[w], NULL, cmatrix_worker_main, &cmatrix_worker_args[w]);
+    }
 }
 
 /* ---------------------------------------------------------------------------
  * Initialize (or re-initialize) all matrix state. Frees existing buffers,
- * allocates matrix[screen_lines+1][screen_cols], length/spaces/updates and
+ * allocates matrix[0..screen_lines+1] (extra row holds off-screen head so the
+ * bottom visible row stays trail), length/spaces/updates and
  * column_active/column_clear_buffer per column. One column starts active; the
  * spawn-delay timer in main() adds more until active_col_count reaches
  * max_col_drops (ceil(66% of screen_cols)). Fills the grid with -1 (empty).
@@ -621,10 +999,14 @@ void var_init() {
         free(matrix[0]);
         free(matrix);
     }
+    if (matrix_snap != NULL) {
+        free(matrix_snap);
+        matrix_snap = NULL;
+    }
 
-    matrix = nmalloc(sizeof(cmatrix *) * (screen_lines + 1));
-    matrix[0] = nmalloc(sizeof(cmatrix) * (screen_lines + 1) * (size_t)screen_cols);
-    for (i = 1; i <= screen_lines; i++) {
+    matrix = nmalloc(sizeof(cmatrix *) * (screen_lines + 2));
+    matrix[0] = nmalloc(sizeof(cmatrix) * (screen_lines + 2) * (size_t)screen_cols);
+    for (i = 1; i <= screen_lines + 1; i++) {
         matrix[i] = matrix[i - 1] + screen_cols;
     }
 
@@ -675,7 +1057,7 @@ void var_init() {
     active_col_count = 0;
 
     /* Make the matrix (all columns so no cell is uninitialized) */
-    for (i = 0; i <= screen_lines; i++) {
+    for (i = 0; i <= screen_lines + 1; i++) {
         for (j = 0; j < screen_cols; j++) {
             matrix[i][j].val = -1;
             matrix[i][j].is_head = false;
@@ -685,9 +1067,11 @@ void var_init() {
         }
     }
 
+    matrix_snap = nmalloc(sizeof(cmatrix) * (screen_lines + 2) * (size_t)screen_cols);
+
     /* Spawn the first drop during init, then start the spawn-delay timer. */
     {
-        int first_col = rand() % screen_cols;
+        int first_col = (int)rand_r(&cmatrix_main_rng) % screen_cols;
         column_active[first_col] = 1;
         active_col_count = 1;
         spec_prepare_spawn_in_column(first_col);
@@ -699,15 +1083,12 @@ void var_init() {
         spawn_timer_last_tick_ts = spawn_timer_start_ts;
     }
 
-    /* Dirty tracking: previous-frame buffer and dirty-line bitmap */
+    /* Dirty tracking: previous-frame buffer */
     if (prev_cell != NULL)
         free(prev_cell);
     prev_cell = nmalloc((size_t)(screen_lines * screen_cols) * sizeof(rendered_cell));
     for (i = 0; i < screen_lines * screen_cols; i++)
         prev_cell[i].ch = -1;  /* sentinel: force full draw on first frame / after resize */
-    if (dirty_lines != NULL)
-        free(dirty_lines);
-    dirty_lines = nmalloc((size_t)screen_lines);
 
     full_redraw_pending = 1;
 
@@ -727,14 +1108,14 @@ void sighandler(int s) {
 
 /* ---------------------------------------------------------------------------
  * Handle terminal resize (SIGWINCH): read new size via TIOCGWINSZ,
- * clamp to minimum 10x10, call ncurses resizeterm/wresize if available,
- * then var_init() to reallocate matrix and per-column arrays, and redraw.
+ * clamp to minimum 10x10, then var_init() and restart worker threads.
  * --------------------------------------------------------------------------- */
 void resize_screen(void) {
     char *tty;
     int fd = 0;
     int result = 0;
     struct winsize win;
+    unsigned r = 0, c = 0;
 
     tty = ttyname(0);
     if (!tty)
@@ -756,19 +1137,11 @@ void resize_screen(void) {
         screen_cols = 10;
     }
 
-#ifdef HAVE_RESIZETERM
-    resizeterm(screen_lines, screen_cols);
-#ifdef HAVE_WRESIZE
-    if (wresize(stdscr, screen_lines, screen_cols) == ERR) {
-        c_die("Cannot resize window!");
-    }
-#endif /* HAVE_WRESIZE */
-#endif /* HAVE_RESIZETERM */
-
+    cmatrix_stop_workers();
+    if (cmatrix_nc != NULL)
+        (void)notcurses_refresh(cmatrix_nc, &r, &c);
     var_init();
-    /* Do these because width may have changed... */
-    clear();
-    refresh();
+    cmatrix_start_workers();
 }
 
 /* ---------------------------------------------------------------------------
@@ -778,25 +1151,28 @@ void resize_screen(void) {
  * lock/unlock columns), draw the grid, optionally draw lock message, sleep.
  * --------------------------------------------------------------------------- */
 int main(int argc, char *argv[]) {
-    int i, y, z, optchr, keypress;
+    int i, optchr;
     int j = 0;
     int screensaver = 0;
     int asynch = 0;
     int bold = 0;
     int force = 0;
-    int firstcoldone = 0;
-    int delay_ms = (int)(1000.0 / 23.976 + 0.5);  /* frame delay in ms; default 23.976 fps, or -F fps */
-    int head_color = COLOR_WHITE;
+    /* Default ~23.976 fps (film cadence). Use -F for higher fps (e.g. 60) when you want it. */
+    int delay_ms = (int)(1000.0 / 23.976 + 0.5);
+    int head_color = COLOR_HEAD_RGB;
     int tail_color = COLOR_GREEN;
     int message_color = COLOR_RED;
+    uint32_t rgb_head = 0xc3ffbfu;
+    uint32_t rgb_tail = 0x00ff41u;
+    uint32_t rgb_msg = 0xff0000u;
     int pause = 0;
     int classic = 0;
     int changes = 0;
     char *msg = "";
 
-    srand((unsigned) time(NULL));
+    cmatrix_main_rng = (unsigned int)time(NULL);
 
-    /* -c uses Unicode (ASCII range); ncurses wide chars need UTF-8 for terminal */
+    /* -c classic mode; UTF-8 locale required for correct display */
     (void) setlocale(LC_ALL, "");
     if (setlocale(LC_CTYPE, "C.UTF-8") == NULL)
         (void) setlocale(LC_CTYPE, "");
@@ -814,75 +1190,45 @@ int main(int argc, char *argv[]) {
         case 'b':
             bold = 1;
             break;
-        case 'T':
-            if (!strcasecmp(optarg, "green")) {
-                tail_color = COLOR_GREEN;
-            } else if (!strcasecmp(optarg, "red")) {
-                tail_color = COLOR_RED;
-            } else if (!strcasecmp(optarg, "blue")) {
-                tail_color = COLOR_BLUE;
-            } else if (!strcasecmp(optarg, "white")) {
-                tail_color = COLOR_WHITE;
-            } else if (!strcasecmp(optarg, "yellow")) {
-                tail_color = COLOR_YELLOW;
-            } else if (!strcasecmp(optarg, "cyan")) {
-                tail_color = COLOR_CYAN;
-            } else if (!strcasecmp(optarg, "magenta")) {
-                tail_color = COLOR_MAGENTA;
-            } else if (!strcasecmp(optarg, "black")) {
-                tail_color = COLOR_BLACK;
-            } else {
-                c_die(" Invalid color selection\n Valid "
-                       "colors are green, red, blue, "
-                       "white, yellow, cyan, magenta " "and black.\n");
-            }
+        case 'T': {
+            uint32_t rgb;
+            int leg;
+            if (cmatrix_parse_color_optarg(optarg, &rgb, &leg) != 0)
+                c_die(" Invalid tail color (-T). Use a name from -h or "
+                       "#RRGGBB (leading #).\n");
+            rgb_tail = rgb;
+            if (leg >= 0)
+                tail_color = leg;
+            else
+                tail_color = COLOR_CUSTOM_TAIL;
             break;
-        case 'H':
-            if (!strcasecmp(optarg, "green")) {
-                head_color = COLOR_GREEN;
-            } else if (!strcasecmp(optarg, "red")) {
-                head_color = COLOR_RED;
-            } else if (!strcasecmp(optarg, "blue")) {
-                head_color = COLOR_BLUE;
-            } else if (!strcasecmp(optarg, "white")) {
-                head_color = COLOR_WHITE;
-            } else if (!strcasecmp(optarg, "yellow")) {
-                head_color = COLOR_YELLOW;
-            } else if (!strcasecmp(optarg, "cyan")) {
-                head_color = COLOR_CYAN;
-            } else if (!strcasecmp(optarg, "magenta")) {
-                head_color = COLOR_MAGENTA;
-            } else if (!strcasecmp(optarg, "black")) {
-                head_color = COLOR_BLACK;
-            } else {
-                c_die(" Invalid head color\n Valid "
-                       "colors are green, red, blue, "
-                       "white, yellow, cyan, magenta and black.\n");
-            }
+        }
+        case 'H': {
+            uint32_t rgb;
+            int leg;
+            if (cmatrix_parse_color_optarg(optarg, &rgb, &leg) != 0)
+                c_die(" Invalid head color (-H). Use a name from -h or "
+                       "#RRGGBB (leading #).\n");
+            rgb_head = rgb;
+            if (leg >= 0)
+                head_color = leg;
+            else
+                head_color = COLOR_HEAD_RGB;
             break;
-        case 'O':
-            if (!strcasecmp(optarg, "green")) {
-                message_color = COLOR_GREEN;
-            } else if (!strcasecmp(optarg, "red")) {
-                message_color = COLOR_RED;
-            } else if (!strcasecmp(optarg, "blue")) {
-                message_color = COLOR_BLUE;
-            } else if (!strcasecmp(optarg, "white")) {
-                message_color = COLOR_WHITE;
-            } else if (!strcasecmp(optarg, "yellow")) {
-                message_color = COLOR_YELLOW;
-            } else if (!strcasecmp(optarg, "cyan")) {
-                message_color = COLOR_CYAN;
-            } else if (!strcasecmp(optarg, "magenta")) {
-                message_color = COLOR_MAGENTA;
-            } else if (!strcasecmp(optarg, "black")) {
-                message_color = COLOR_BLACK;
-            } else {
-                c_die(" Invalid message color\n Valid "
-                       "colors are green, red, blue, "
-                       "white, yellow, cyan, magenta and black.\n");
-            }
+        }
+        case 'O': {
+            uint32_t rgb;
+            int leg;
+            if (cmatrix_parse_color_optarg(optarg, &rgb, &leg) != 0)
+                c_die(" Invalid message color (-O). Use a name from -h or "
+                       "#RRGGBB (leading #).\n");
+            rgb_msg = rgb;
+            if (leg >= 0)
+                message_color = leg;
+            else
+                message_color = COLOR_CUSTOM_MSG;
             break;
+        }
         case 'c':
             classic = 1;
             break;
@@ -911,10 +1257,12 @@ int main(int argc, char *argv[]) {
             exit(0);
         case 'F': {
             double fps = atof(optarg);
-            if (fps >= 1.0 && fps <= 24.0) {
+            if (fps >= 1.0 && fps <= 120.0) {
                 delay_ms = (int)(1000.0 / fps + 0.5);
+                if (delay_ms < 1)
+                    delay_ms = 1;
             } else {
-                c_die(" -F fps must be between 1 and 24 (e.g. 23.976, 24).\n");
+                c_die(" -F fps must be between 1 and 120 (e.g. 24, 60).\n");
             }
             break;
         }
@@ -927,7 +1275,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* --- Locale: rain uses Unicode (ASCII 0x20–0x7E via add_wch); need UTF-8 --- */
+    /* --- Locale: UTF-8; all cells go through ncplane_putegc_yx. Rain (PUA): UTF-8 via
+     * codepoint_to_utf8 in draw_cell_at. -M message: one byte per character from msg[];
+     * draw_cell_at maps ch > 127 to '#'. --- */
     if (setlocale(LC_ALL, "C.UTF-8") == NULL)
         (void) setlocale(LC_ALL, "");
 
@@ -940,7 +1290,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* When -c is on: 0 = draw half-width Katakana with add_wch (no fallback); 1 = ASCII only (CMATRIX_ASCII_FALLBACK). */
+    /* When -c is on: CMATRIX_ASCII_FALLBACK forces ASCII-only drawing where applicable. */
     static int use_ascii_fallback = -1;
     if (use_ascii_fallback < 0)
         use_ascii_fallback = (getenv("CMATRIX_ASCII_FALLBACK") != NULL) ? 1 : 0;
@@ -955,21 +1305,23 @@ int main(int argc, char *argv[]) {
             try_font_switch_on();
     }
 
-    /* --- ncurses init and terminal settings --- */
-    initscr();
-    savetty();
-    nonl();
-    cbreak();
-    noecho();
-    timeout(0);
-    leaveok(stdscr, TRUE);
-    curs_set(0);
-    signal(SIGINT, sighandler);
-    signal(SIGQUIT, sighandler);
-    signal(SIGWINCH, sighandler);
-    signal(SIGTSTP, sighandler);
+    /* --- Notcurses (truecolor); we handle SIGWINCH ourselves --- */
+    {
+        notcurses_options ncopts;
+        int fi;
+        memset(&ncopts, 0, sizeof(ncopts));
+        ncopts.flags = NCOPTION_SUPPRESS_BANNERS | NCOPTION_NO_WINCH_SIGHANDLER;
+        cmatrix_nc = notcurses_init(&ncopts, stdout);
+        if (cmatrix_nc == NULL)
+            c_die("cmatrix: notcurses_init failed (requires a real terminal and UTF-8 locale).\n");
+        cmatrix_plane = notcurses_stdplane(cmatrix_nc);
+        signal(SIGINT, sighandler);
+        signal(SIGQUIT, sighandler);
+        signal(SIGWINCH, sighandler);
+        signal(SIGTSTP, sighandler);
+    }
 
-if (console) {
+    if (console) {
 #ifdef HAVE_CONSOLECHARS
         if (va_system("consolechars -f matrix") != 0) {
             c_die
@@ -985,82 +1337,22 @@ if (console) {
 #else
         c_die(" Neither consolechars nor setfont is available; cannot use -l (Linux console mode).\n");
 #endif
-}
-
-    /* --- Color pairs for matrix (green head/trail) and optional custom green --- */
-    if (has_colors()) {
-        int using_default_bg = 0;
-        int fade_bg = COLOR_BLACK;
-        int fi;
-        start_color();
-        /* Matrix digital rain green #00FF41 (R=0, G=255, B=65); ncurses uses 0-1000 per component */
-        if (can_change_color())
-            init_color(COLOR_GREEN, 0, 1000, 255);  /* 65*1000/255 ≈ 255 */
-        /* Add in colors, if available */
-#ifdef HAVE_USE_DEFAULT_COLORS
-        if (use_default_colors() != ERR) {
-            using_default_bg = 1;
-            fade_bg = -1;
-            init_pair(COLOR_BLACK, -1, -1);
-            init_pair(COLOR_GREEN, COLOR_GREEN, -1);
-            init_pair(COLOR_WHITE, COLOR_WHITE, -1);
-            init_pair(COLOR_RED, COLOR_RED, -1);
-            init_pair(COLOR_CYAN, COLOR_CYAN, -1);
-            init_pair(COLOR_MAGENTA, COLOR_MAGENTA, -1);
-            init_pair(COLOR_BLUE, COLOR_BLUE, -1);
-            init_pair(COLOR_YELLOW, COLOR_YELLOW, -1);
-        } else {
-#else
-        { /* Hack to deal with the after effects of else when HAVE_USE_DEFAULT_COLORS is not defined */
-#endif
-            init_pair(COLOR_BLACK, COLOR_BLACK, COLOR_BLACK);
-            init_pair(COLOR_GREEN, COLOR_GREEN, COLOR_BLACK);
-            init_pair(COLOR_WHITE, COLOR_WHITE, COLOR_BLACK);
-            init_pair(COLOR_RED, COLOR_RED, COLOR_BLACK);
-            init_pair(COLOR_CYAN, COLOR_CYAN, COLOR_BLACK);
-            init_pair(COLOR_MAGENTA, COLOR_MAGENTA, COLOR_BLACK);
-            init_pair(COLOR_BLUE, COLOR_BLUE, COLOR_BLACK);
-            init_pair(COLOR_YELLOW, COLOR_YELLOW, COLOR_BLACK);
-        }
-        /* ncurses A_DIM is terminal-dependent; build explicit ramp pairs for green fade. */
-        tail_fade_ready = 0;
-        for (fi = 0; fi < SWEEGIE_FADE_STEPS; fi++)
-            tail_fade_pairs[fi] = COLOR_GREEN;
-        if (can_change_color() &&
-            COLORS >= (COLOR_WHITE + 1 + SWEEGIE_FADE_STEPS) &&
-            COLOR_PAIRS >= (16 + SWEEGIE_FADE_STEPS)) {
-            int base_cid = COLORS - SWEEGIE_FADE_STEPS;
-            int base_pid = 16;
-            for (fi = 0; fi < SWEEGIE_FADE_STEPS; fi++) {
-                int cid = base_cid + fi;
-                int pid = base_pid + fi;
-                /* fi=0 => bright green, fi=last => near black-green */
-                int g = 1000 - (fi * 960) / (SWEEGIE_FADE_STEPS - 1);
-                int b = 255 - (fi * 245) / (SWEEGIE_FADE_STEPS - 1);
-                if (g < 0) g = 0;
-                if (b < 0) b = 0;
-                init_color(cid, 0, g, b);
-                init_pair(pid, cid, fade_bg);
-                tail_fade_pairs[fi] = pid;
-            }
-            tail_fade_ready = 1;
-        } else if (using_default_bg) {
-            /* Fallback ramp when terminal cannot redefine colors. */
-            for (fi = 0; fi < SWEEGIE_FADE_STEPS; fi++)
-                tail_fade_pairs[fi] = (fi > (SWEEGIE_FADE_STEPS * 3) / 4) ? COLOR_BLACK : COLOR_GREEN;
-        }
     }
 
-    /* --- Non-message rain: PUA U+E000–U+E067 (DejaVuSansMono_patched Matrix block) --- */
-
     /* --- Screen size and one-time matrix init --- */
-    getmaxyx(stdscr, screen_lines, screen_cols);
+    {
+        unsigned dimy = 24, dimx = 80;
+        notcurses_stddim_yx(cmatrix_nc, &dimy, &dimx);
+        screen_lines = (int)dimy;
+        screen_cols = (int)dimx;
+    }
     if (screen_lines < 10)
         screen_lines = 10;
     if (screen_cols < 10)
         screen_cols = 10;
 
     var_init();
+    cmatrix_start_workers();
 
     /* Clear -M message state when message is set (invisible until revealed by drop). */
     if (msg[0] != '\0') {
@@ -1071,6 +1363,10 @@ if (console) {
         memset(msg_was_on_message, 0, ml);
         msg_spawns_since_unrevealed = 0;
     }
+
+    /* Monotonic absolute wake times: steadier pacing than napms; catches up if a frame runs long. */
+    struct timespec frame_next;
+    clock_gettime(CLOCK_MONOTONIC, &frame_next);
 
     /* --- Main loop: signals, input, column updates, draw, lock message, sleep --- */
     while (1) {
@@ -1098,54 +1394,69 @@ if (console) {
                     finish();
         }
 
-        /* Process keypress: screensaver (exit on any key) or runtime toggles (q, a, b, L, n, 0–9, colors, p). */
-        if ((keypress = wgetch(stdscr)) != ERR) {
-            if (screensaver == 1) {
-                finish();
-            } else {
-                switch (keypress) {
-                case 'q':
-                    if (lock != 1)
-                        finish();
-                    break;
-                case 'a':
-                    asynch = 1 - asynch;
-                    break;
-                case 'b':
-                    bold = 1;
-                    break;
-                case 'L':
-                    lock = 1;
-                    break;
-                case 'n':
-                    bold = 0;
-                    break;
-                case '!':
-                    tail_color = COLOR_RED;
-                    break;
-                case '@':
-                    tail_color = COLOR_GREEN;
-                    break;
-                case '#':
-                    tail_color = COLOR_YELLOW;
-                    break;
-                case '$':
-                    tail_color = COLOR_BLUE;
-                    break;
-                case '%':
-                    tail_color = COLOR_MAGENTA;
-                    break;
-                case '^':
-                    tail_color = COLOR_CYAN;
-                    break;
-                case '&':
-                    tail_color = COLOR_WHITE;
-                    break;
-                case 'p':
-                case 'P':
-                    pause = (pause == 0)?1:0;
-                    break;
-
+        /* Process keypress: screensaver (exit on any key) or runtime toggles. */
+        {
+            ncinput ni;
+            uint32_t ich;
+            memset(&ni, 0, sizeof(ni));
+            ich = notcurses_get_nblock(cmatrix_nc, &ni);
+            if (ich != 0u && ich != (uint32_t)-1 && ich < 256u) {
+                char keypress = (char)ich;
+                if (screensaver == 1) {
+                    finish();
+                } else {
+                    switch (keypress) {
+                    case 'q':
+                        if (lock != 1)
+                            finish();
+                        break;
+                    case 'a':
+                        asynch = 1 - asynch;
+                        break;
+                    case 'b':
+                        bold = 1;
+                        break;
+                    case 'L':
+                        lock = 1;
+                        break;
+                    case 'n':
+                        bold = 0;
+                        break;
+                    case '!':
+                        tail_color = COLOR_RED;
+                        rgb_tail = cmatrix_palette_rgb(tail_color);
+                        break;
+                    case '@':
+                        tail_color = COLOR_GREEN;
+                        rgb_tail = cmatrix_palette_rgb(tail_color);
+                        break;
+                    case '#':
+                        tail_color = COLOR_YELLOW;
+                        rgb_tail = cmatrix_palette_rgb(tail_color);
+                        break;
+                    case '$':
+                        tail_color = COLOR_BLUE;
+                        rgb_tail = cmatrix_palette_rgb(tail_color);
+                        break;
+                    case '%':
+                        tail_color = COLOR_MAGENTA;
+                        rgb_tail = cmatrix_palette_rgb(tail_color);
+                        break;
+                    case '^':
+                        tail_color = COLOR_CYAN;
+                        rgb_tail = cmatrix_palette_rgb(tail_color);
+                        break;
+                    case '&':
+                        tail_color = COLOR_WHITE;
+                        rgb_tail = cmatrix_palette_rgb(tail_color);
+                        break;
+                    case 'p':
+                    case 'P':
+                        pause = (pause == 0) ? 1 : 0;
+                        break;
+                    default:
+                        break;
+                    }
                 }
             }
         }
@@ -1170,8 +1481,11 @@ if (console) {
             if (elapsed >= spawn_timer_disable_after_sec) {
                 spawn_timer_enabled = 0;
                 spawn_timer_remaining_sec = 0.0;
-                while (active_col_count < max_col_drops)
+                while (active_col_count < max_col_drops) {
+                    pthread_mutex_lock(&cmatrix_spawn_mx);
                     unlock_one_column_and_spawn(msg, msg_len, msg_y);
+                    pthread_mutex_unlock(&cmatrix_spawn_mx);
+                }
             } else {
                 double dt =
                     (double)(now_ts.tv_sec - spawn_timer_last_tick_ts.tv_sec) +
@@ -1182,8 +1496,11 @@ if (console) {
 
                 spawn_timer_remaining_sec -= dt;
                 while (spawn_timer_enabled && spawn_timer_remaining_sec <= 0.0) {
-                    if (active_col_count < max_col_drops)
+                    if (active_col_count < max_col_drops) {
+                        pthread_mutex_lock(&cmatrix_spawn_mx);
                         unlock_one_column_and_spawn(msg, msg_len, msg_y);
+                        pthread_mutex_unlock(&cmatrix_spawn_mx);
+                    }
 
                     /* Recompute elapsed at the moment of timer expiry. */
                     clock_gettime(CLOCK_MONOTONIC, &now_ts);
@@ -1194,8 +1511,11 @@ if (console) {
                     if (elapsed >= spawn_timer_disable_after_sec) {
                         spawn_timer_enabled = 0;
                         spawn_timer_remaining_sec = 0.0;
-                        while (active_col_count < max_col_drops)
+                        while (active_col_count < max_col_drops) {
+                            pthread_mutex_lock(&cmatrix_spawn_mx);
                             unlock_one_column_and_spawn(msg, msg_len, msg_y);
+                            pthread_mutex_unlock(&cmatrix_spawn_mx);
+                        }
                         break;
                     }
 
@@ -1219,156 +1539,31 @@ if (console) {
             }
         }
 
-        /* Clear dirty-line bitmap for this frame. */
-        if (dirty_lines != NULL)
-            memset(dirty_lines, 0, (size_t)screen_lines);
+        /* Snapshot for neighbor reads; worker threads update live matrix. */
+        if (matrix_snap != NULL && matrix != NULL && matrix[0] != NULL) {
+            size_t sz = sizeof(cmatrix) * (size_t)(screen_lines + 2) * (size_t)screen_cols;
+            memcpy(matrix_snap, matrix[0], sz);
+        }
+        gsim_pause = pause;
+        gsim_asynch = asynch;
+        gsim_delay_ms = delay_ms;
+        gsim_changes = changes;
+        gsim_head_color = head_color;
+        gsim_tail_color = tail_color;
+        gsim_bold = bold;
+        gsim_msg = msg;
+        gsim_msg_len = msg_len;
+        gsim_msg_row = msg_row;
+        gsim_msg_y = msg_y;
+        {
+            int w;
+            for (w = 0; w < cmatrix_num_workers; w++)
+                (void)sem_post(&cmatrix_sem_start[w]);
+            for (w = 0; w < cmatrix_num_workers; w++)
+                (void)sem_wait(&cmatrix_sem_done[w]);
+        }
 
-        /* Update active columns: spawn new drops, advance segments, slide clear buffer, lock column when drop hits bottom and unlock another. */
         for (j = 0; j < screen_cols; j++) {
-            if (matrix == NULL || j < 0 || j >= screen_cols)
-                continue;
-            if (pause == 0 && column_active != NULL && column_active[j]) {
-                /* Head and sweegie must advance on the same column tick (same cadence). */
-                int steps = 0;
-                if (asynch == 0) {
-                    steps = 1;
-                } else if (col_speed_rps != NULL && col_row_accum != NULL) {
-                    double dt = (double)delay_ms / 1000.0;
-                    if (dt < 0.0)
-                        dt = 0.0;
-                    col_row_accum[j] += col_speed_rps[j] * (float)dt;
-                    if (col_row_accum[j] >= 1.0f) {
-                        steps = (int)col_row_accum[j];
-                        /* Avoid extreme catch-up on stalls. */
-                        if (steps > 3)
-                            steps = 3;
-                        col_row_accum[j] -= (float)steps;
-                    }
-                }
-                while (steps-- > 0 && column_active[j]) {
-
-                /* No in-column respawn: new drops start only via unlock_one_column_and_spawn(). */
-                    /* Walk column j top-to-bottom: skip leading spaces, then segment (run of non-space), then advance head and optionally slide clear buffer; when segment hits bottom, lock column and unlock another. */
-                    i = 0;
-                    y = 0;
-                    firstcoldone = 0;
-                    while (i <= screen_lines) {
-                        /* Bounds check before any matrix read (avoids reorder/overflow) */
-                        if (i < 0 || i > screen_lines)
-                            break;
-                        /* Skip over spaces */
-                        while (i <= screen_lines) {
-                            int v = (i >= 0 && i <= screen_lines) ? matrix[i][j].val : -1;
-                            if (v != ' ' && v != -1)
-                                break;
-                            i++;
-                        }
-
-                        if (i > screen_lines) {
-                            break;
-                        }
-
-                        /* Go to the head of this column */
-                        z = i;
-                        y = 0;
-                        while (i <= screen_lines) {
-                            if (i < 0 || i > screen_lines)
-                                break;
-                            {
-                                int v = matrix[i][j].val;
-                                if (v == ' ' || v == -1)
-                                    break;
-                            }
-                            matrix[i][j].is_head = false;
-                            if (changes) {
-                                if (rand() % 8 == 0) {
-                                    matrix[i][j].val = random_char_avoiding_neighbors(i, j);
-                                    matrix[i][j].sweegie_fade = 0;
-                                }
-                            }
-                            i++;
-                            y++;
-                        }
-
-                        if (i > screen_lines) {
-                            /* Head stepped past bottom: freeze residual tail in this column, lock it,
-                             * optionally unlock a locked column and start a new drop there. */
-                            if (!firstcoldone && column_active != NULL) {
-                                column_active[j] = 0;
-                                if (active_col_count > 0)
-                                    active_col_count--;
-                                /* Replacement spawn should always occur, independent of timer ramp-up. */
-                                unlock_one_column_and_spawn(msg, msg_len, msg_y);
-                                break;
-                            }
-                            continue;
-                        }
-
-                        if (i >= 0 && i <= screen_lines) {
-                            matrix[i][j].val = random_char_avoiding_neighbors(i, j);
-                            matrix[i][j].is_head = true;
-                            matrix[i][j].sweegie_fade = 0;
-                            matrix[i][j].sweegie_base_color = (unsigned char)head_color;
-                            matrix[i][j].sweegie_base_bold = (unsigned char)(bold ? 1 : 0);
-                            /* Progressive fade in sweegie window, then clear at trailing edge (dist=1). */
-                            if (column_clear_buffer != NULL && column_clear_buffer[j] > 0 && !firstcoldone) {
-                                int r, cb = column_clear_buffer[j];
-                                int effective_cb = (screen_lines - i) < cb ? (screen_lines - i) : cb;
-                                if (effective_cb < 0)
-                                    effective_cb = 0;
-                                for (r = 1; r <= effective_cb && i + r <= screen_lines; r++) {
-                                    int rr = i + r;
-                                    if (matrix[rr][j].val == -1 || matrix[rr][j].is_head)
-                                        continue;
-                                    if (r == 1) {
-                                        matrix[rr][j].val = -1;
-                                        matrix[rr][j].is_head = false;
-                                        matrix[rr][j].sweegie_fade = 0;
-                                        matrix[rr][j].sweegie_base_color = (unsigned char)tail_color;
-                                        matrix[rr][j].sweegie_base_bold = 0;
-                                    } else {
-                                        unsigned char target_fade = sweegie_fade_for_distance(effective_cb, r);
-                                        if (matrix[rr][j].sweegie_fade == 0) {
-                                            matrix[rr][j].sweegie_base_color = (unsigned char)tail_color;
-                                            matrix[rr][j].sweegie_base_bold = (unsigned char)((bold && (matrix[rr][j].val % 2 == 0)) ? 1 : 0);
-                                        }
-                                        if (matrix[rr][j].sweegie_fade < target_fade)
-                                            matrix[rr][j].sweegie_fade = target_fade;
-                                    }
-                                }
-                            }
-                        }
-
-                        /* If we're at the top of the column and it's reached its
-                           full length (about to start moving down), we do this
-                           to get it moving.  This is also how we keep segments not
-                           already growing from growing accidentally =>
-                         */
-                        if (y > length[j] || firstcoldone) {
-                            /* Only clear top of first segment; stream already extended at bottom in block above */
-                            if (z >= 0 && z <= screen_lines && !firstcoldone) {
-                                matrix[z][j].val = ' ';
-                                matrix[z][j].sweegie_fade = 0;
-                                matrix[z][j].sweegie_base_color = (unsigned char)tail_color;
-                                matrix[z][j].sweegie_base_bold = 0;
-                                if (i > screen_lines) {
-                                    matrix[0][j].val = -1; /* segment hit bottom, allow respawn */
-                                    matrix[0][j].sweegie_fade = 0;
-                                    matrix[0][j].sweegie_base_color = (unsigned char)tail_color;
-                                    matrix[0][j].sweegie_base_bold = 0;
-                                }
-                            } else if (firstcoldone) {
-                                matrix[0][j].val = -1;
-                                matrix[0][j].sweegie_fade = 0;
-                                matrix[0][j].sweegie_base_color = (unsigned char)tail_color;
-                                matrix[0][j].sweegie_base_bold = 0;
-                            }
-                        }
-                        firstcoldone = 1;
-                        i++;
-                    }
-                }
-            }
             /* Skip rendering columns that cannot have changed this frame (no rain sim,
              * no -M band). Same idea as video coding: only send what changed; full
              * redraw_pending is a keyframe after resize/init. */
@@ -1379,13 +1574,16 @@ if (console) {
                 !(msg_len > 0 && j >= msg_y && j < msg_y + msg_len))
                 continue;
             /* Draw this column: only cells that changed (dirty tracking). */
-            y = 1;
-            z = screen_lines;
+            {
+            int y = 1;
+            int z = screen_lines;
             if (z > screen_lines)
                 z = screen_lines;
             for (i = y; i <= z; i++) {
                 int line = i - 1;
-                int idx = line * screen_cols + j;
+                /* Terminal line (line) keys prev_cell; matrix row i matches get_rendered_cell(i,). */
+                int line_idx = line * screen_cols + j;
+                int matrix_idx = i * screen_cols + j;
                 int mk = -1;
                 int is_msg_cell = 0;
                 if (msg_len > 0 && i == msg_row && j >= msg_y && j < msg_y + msg_len) {
@@ -1393,17 +1591,16 @@ if (console) {
                     if (mk >= 0 && mk < msg_len && mk < MSG_STATE_MAX && msg[mk] != ' ')
                         is_msg_cell = 1;
                 }
-                cmatrix cell = (matrix != NULL && matrix[0] != NULL && idx >= 0 && idx <= (screen_lines + 1) * screen_cols - 1)
-                    ? matrix[0][idx] : (cmatrix){ .val = -1, .is_head = false, .sweegie_fade = 0, .sweegie_base_color = COLOR_GREEN, .sweegie_base_bold = 0 };
+                cmatrix cell = (matrix != NULL && matrix[0] != NULL && matrix_idx >= 0 && matrix_idx <= (screen_lines + 2) * screen_cols - 1)
+                    ? matrix[0][matrix_idx] : (cmatrix){ .val = -1, .is_head = false, .sweegie_fade = 0, .sweegie_base_color = COLOR_GREEN, .sweegie_base_bold = 0 };
                 int message_cell_with_side_effect = (is_msg_cell && mk >= 0 && mk < MSG_STATE_MAX && (cell.is_head || msg_was_on_message[mk]));
-                rendered_cell current = get_rendered_cell(i, j, msg, msg_len, msg_row, msg_y, bold, head_color, tail_color, message_color, use_ascii_fallback);
-                if (prev_cell != NULL && prev_cell[idx].ch != -1 && memcmp(&current, &prev_cell[idx], sizeof(rendered_cell)) == 0 && !message_cell_with_side_effect)
+                rendered_cell current = get_rendered_cell(i, j, msg, msg_len, msg_row, msg_y, bold, head_color, tail_color, message_color, use_ascii_fallback,
+                    rgb_head, rgb_tail, rgb_msg);
+                if (prev_cell != NULL && prev_cell[line_idx].ch != -1 && memcmp(&current, &prev_cell[line_idx], sizeof(rendered_cell)) == 0 && !message_cell_with_side_effect)
                     continue;
-                draw_cell_at(line, j, &current, use_ascii_fallback);
+                draw_cell_at(cmatrix_plane, line, j, &current, use_ascii_fallback);
                 if (prev_cell != NULL)
-                    prev_cell[idx] = current;
-                if (dirty_lines != NULL)
-                    dirty_lines[line] = 1;
+                    prev_cell[line_idx] = current;
                 if (is_msg_cell && mk >= 0 && mk < MSG_STATE_MAX) {
                     if (cell.is_head) {
                         msg_was_on_message[mk] = 1;
@@ -1413,24 +1610,31 @@ if (console) {
                         msg_was_on_message[mk] = 0;
                 }
             }
-        }
-
-        /* Only refresh changed lines, then one burst to terminal. */
-        if (dirty_lines != NULL) {
-            int line;
-            for (line = 0; line < screen_lines; line++) {
-                if (dirty_lines[line])
-                    touchline(stdscr, line, 1);
             }
         }
-        wnoutrefresh(stdscr);
-        doupdate();
+
+        /* Paused + static screen: skip render (no cell changes). */
+        if (!(pause && !full_redraw_pending)) {
+            (void)notcurses_render(cmatrix_nc);
+        }
 
         if (full_redraw_pending)
             full_redraw_pending = 0;
 
-        /* Frame delay in ms (default 23.976 fps, or -F fps). */
-        napms(delay_ms);
+        /* Frame pacing: -F sets delay_ms; when paused with no resize keyframe, sleep longer (less CPU). */
+        {
+            long long add_ns;
+            if (pause && !full_redraw_pending)
+                add_ns = 100LL * 1000000LL;
+            else
+                add_ns = (long long)delay_ms * 1000000LL;
+            frame_next.tv_nsec += add_ns;
+            while (frame_next.tv_nsec >= 1000000000L) {
+                frame_next.tv_sec++;
+                frame_next.tv_nsec -= 1000000000L;
+            }
+            (void) clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &frame_next, NULL);
+        }
     }
     finish();
 }

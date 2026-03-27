@@ -32,12 +32,6 @@ fi
 echo "Updating apt package lists..."
 ${SUDO} apt-get update
 
-# ncurses dev package name varies across Ubuntu releases.
-NCURSES_DEV_PKG="libncursesw5-dev"
-if ! apt-cache show "${NCURSES_DEV_PKG}" >/dev/null 2>&1; then
-  NCURSES_DEV_PKG="libncurses-dev"
-fi
-
 PACKAGES=(
   build-essential
   cmake
@@ -45,8 +39,7 @@ PACKAGES=(
   fontconfig
   python3
   fonts-dejavu-core
-  libncursesw6
-  "${NCURSES_DEV_PKG}"
+  libnotcurses-dev
 )
 
 echo "Installing dependencies:"

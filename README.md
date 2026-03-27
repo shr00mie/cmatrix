@@ -19,6 +19,16 @@ Run the dependency installer script:
 ./data/install-dependencies.sh
 ```
 
+This installs the toolchain and runtime/build deps for the Notcurses renderer, including:
+
+- `build-essential`
+- `cmake`
+- `pkg-config`
+- `libnotcurses-dev`
+- `fontconfig`
+- `fonts-dejavu-core`
+- `python3`
+
 ## Compile via CMake
 
 ```bash

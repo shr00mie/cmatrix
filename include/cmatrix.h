@@ -15,6 +15,8 @@
 #include <signal.h>
 #include <stdbool.h>
 
+struct notcurses;
+
 #ifndef EXCLUDE_CONFIG_H
 #include "config.h"
 #endif
@@ -45,6 +47,9 @@ extern int *spaces;
 extern int *updates;
 extern volatile sig_atomic_t signal_status;
 
+/* Notcurses context (set in main); util.c calls stop on exit. */
+extern struct notcurses *cmatrix_nc;
+
 /* ---------------------------------------------------------------------------
  * Utilities (implemented in util.c): printf-style system(), clean exit,
  * fatal error, usage/version, and non-NULL malloc wrapper.
@@ -67,5 +72,9 @@ void resize_screen(void);
 
 /* Restore terminal font when exiting (called from finish/c_die). No-op if font was not switched. */
 void cmatrix_restore_terminal_font(void);
+void cmatrix_notcurses_stop(void);
+
+/* Truecolor names + #RRGGBB (see usage / cmatrix_print_named_color_legend). */
+void cmatrix_print_named_color_legend(void);
 
 #endif /* CMATRIX_H */

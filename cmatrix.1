@@ -7,6 +7,8 @@ CMatrix
 .SH DESCRIPTION
 Shows a scrolling 'Matrix' like screen in Linux.
 .PP
+Rendering uses Notcurses (24-bit color, UTF-8). Build and run-time require \fBlibnotcurses\fR (e.g. Debian: \fBlibnotcurses-dev\fR).
+.PP
 Default rain uses Unicode PUA \fBU+E000\fR–\fBU+E069\fR (106 glyphs) from a merged DejaVu font. \fBmake install\fR installs \fIDejaVuSansMono_working.ttf\fR as \fIDejaVuSansMono.ttf\fR into \fI/usr/share/fonts/truetype/\fR and runs \fBfc-cache\fR. User-local install path is \fI~/.local/share/fonts/DejaVuSansMono.ttf\fR. Set your terminal font to \fIDejaVu Sans Mono\fR so those code points render correctly.
 .PP
 For Japanese mode (\-c), the build may still install Matrix Code fonts system-wide; set your terminal to "Matrix Code" for \-c, or use Matrix Code NFI (DaFont). Console mode (\-l) uses setfont/consolechars; install a console font separately for \-l.
@@ -54,17 +56,25 @@ No bold characters (overrides \-b)
 Print version information and exit
 .TP
 .I "\-F fps"
-Frame rate in frames per second (default 23.976; e.g. 30, 60).
+Frame rate in frames per second, 1–120 (default ~23.976; e.g. 60 for high refresh).
 .TP
 .I "\-T color"
 Use this color for matrix tail (default green).
-Valid colors are green, red, blue, white, yellow, cyan, magenta and black.
+Argument is a named color (see
+.B \-h
+list) or truecolor
+.I #RRGGBB
+with a leading \fB#\fR (e.g. \fB#00ff41\fR).
 .TP
 .I "\-H color"
-Use this color for the drop head (default white).
+Use this color for the drop head (default #c3ffbf).
+Same rules as
+.BR \-T .
 .TP
 .I "\-O color"
 Use this color for the \-M message (default red).
+Same rules as
+.BR \-T .
 .TP
 .I "\-M message"
 Add a message in the center of cmatrix

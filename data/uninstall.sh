@@ -32,8 +32,8 @@ fi
 SYSTEM_DEJAVU_TTF="$(fc-match -f '%{file}' 'DejaVu Sans Mono' 2>/dev/null || true)"
 if [ -z "${SYSTEM_DEJAVU_TTF}" ] || [ ! -f "${SYSTEM_DEJAVU_TTF}" ]; then
   for candidate in \
-    "/usr/share/fonts/truetype/DejaVuSansMono.ttf" \
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf" \
+    "/usr/share/fonts/truetype/DejaVuSansMono.ttf" \
     "/usr/local/share/fonts/DejaVuSansMono.ttf"; do
     if [ -f "${candidate}" ]; then
       SYSTEM_DEJAVU_TTF="${candidate}"

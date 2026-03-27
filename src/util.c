@@ -13,12 +13,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#ifdef HAVE_NCURSES_H
-#include <ncurses.h>
-#else
-#include <curses.h>
-#endif
-
 /* ---------------------------------------------------------------------------
  * Run a shell command from a printf-style format string. Used for
  * consolechars/setfont and for restoring the font on exit.
@@ -39,11 +33,7 @@ int va_system(char *str, ...) {
  * --------------------------------------------------------------------------- */
 void finish(void) {
     cmatrix_restore_terminal_font();
-    curs_set(1);
-    clear();
-    refresh();
-    resetty();
-    endwin();
+    cmatrix_notcurses_stop();
     if (console) {
 #ifdef HAVE_CONSOLECHARS
         va_system("consolechars -d");
@@ -62,11 +52,7 @@ void c_die(char *msg, ...) {
     va_list ap;
 
     cmatrix_restore_terminal_font();
-    curs_set(1);
-    clear();
-    refresh();
-    resetty();
-    endwin();
+    cmatrix_notcurses_stop();
 
     if (console) {
 #ifdef HAVE_CONSOLECHARS
@@ -99,11 +85,12 @@ void usage(void) {
     printf(" -s: \"Screensaver\" mode, exits on first keystroke\n");
     printf(" -V: Print version information and exit\n");
     printf(" -M [message]: Prints your message in the center of the screen. Overrides -L's default message.\n");
-    printf(" -F fps: Frame rate (default 23.976; e.g. 30, 60)\n");
-    printf(" -T [color]: Use this color for matrix tail (default green)\n");
-    printf(" -H [color]: Use this color for drop head (default white)\n");
-    printf(" -O [color]: Use this color for -M message (default red)\n");
+    printf(" -F fps: Frame rate 1–120 (default ~23.976; e.g. -F 60 for high refresh)\n");
+    printf(" -T color|#RRGGBB: Matrix tail (default green). Names or truecolor hex with leading #.\n");
+    printf(" -H color|#RRGGBB: Drop head (default #c3ffbf).\n");
+    printf(" -O color|#RRGGBB: -M message color (default red).\n");
     printf(" -k: Characters change while scrolling\n");
+    cmatrix_print_named_color_legend();
 }
 
 /* ---------------------------------------------------------------------------
@@ -113,7 +100,7 @@ void usage(void) {
 void version(void) {
     printf(" CMatrix version %s (compiled %s, %s)\n",
         VERSION, __TIME__, __DATE__);
-    printf("Rain: Matrix PUA U+E000-U+E067 (104 glyphs; patched font grid idx 1962-2065). Set terminal font to DejaVu Sans Mono (install merged DejaVuSansMono_patched.ttf).\n");
+    printf("Rain: Matrix PUA U+E000-U+E067 (104 glyphs; grid idx 1962-2065). Replace system DejaVuSansMono.ttf with the patch via data/fonts/install-dejavu-user-font.sh (sudo make install runs this), then set terminal font to DejaVu Sans Mono.\n");
     printf("Original author: Chris Allegretta. 2017-Present: Abishek V Ashok.\n");
     printf("This version by shr00mie.\n");
 }
