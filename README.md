@@ -3,6 +3,12 @@
 
 For the time being, Ubuntu only.
 
+
+[Demo](https://github.com/user-attachments/assets/3178be08-7594-43bf-ab6d-fffcdf64601c)
+
+
+
+
 ## Clone
 
 ```bash
