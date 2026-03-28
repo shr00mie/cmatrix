@@ -9,7 +9,6 @@ For the time being, Ubuntu only.
 ## Custom head and tail colors via string or hex
 <img width="832" height="438" alt="image" src="https://github.com/user-attachments/assets/25f57797-aa10-427a-b8ce-79cd7c850c78" />
 
-
 ## Clone
 
 ```bash
@@ -91,3 +90,12 @@ After installation, the repo-provided uninstall script will be copied to:
 `~/.local/share/cmatrix/uninstall.sh`
 
 This script restores the original system `DejaVuSansMono.ttf` from `~/.local/share/cmatrix/backup/` and refreshes the system font cache.
+
+## ToDo:
+* [] tweak init sequence to make drop spawn more parabolic.
+* [] migratory messages; appear in random locations. appear. stick around for like 10 seconds, get wiped, then get revealed somewhere else on screen.
+* [] play around with total active columns and tail lengths a bit more. they're close, but not quite where i want them.
+* [] mess with how drops spawn in columns with existing tails and how the squeegee fade works with various length sliding windows.
+* [] update ubuntu installer to query gnome term profile for current font, and patch user's preffered font with matrix glyphs.
+* [] figure out how to get this to work with putty.
+* [] clone Emily Blunt.
