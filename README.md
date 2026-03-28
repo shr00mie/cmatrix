@@ -99,3 +99,7 @@ This script restores the original system `DejaVuSansMono.ttf` from `~/.local/sha
 - [ ] update ubuntu installer to query gnome term profile for current font, and patch user's preffered font with matrix glyphs.
 - [ ] figure out how to get this to work with putty.
 - [ ] clone Emily Blunt.
+
+## Attribution
+
+This work builds on [cmatrix](https://github.com/abishekvashok/cmatrix), maintained by [Abishek V Ashok](https://github.com/abishekvashok) and contributors.
