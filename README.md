@@ -3,10 +3,11 @@
 
 For the time being, Ubuntu only.
 
-
+## Digital Rain Demo
 [Demo](https://github.com/user-attachments/assets/3178be08-7594-43bf-ab6d-fffcdf64601c)
 
-
+## Custom head and tail colors via string or hex
+<img width="832" height="438" alt="image" src="https://github.com/user-attachments/assets/25f57797-aa10-427a-b8ce-79cd7c850c78" />
 
 
 ## Clone
