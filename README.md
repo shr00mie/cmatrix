@@ -92,10 +92,10 @@ After installation, the repo-provided uninstall script will be copied to:
 This script restores the original system `DejaVuSansMono.ttf` from `~/.local/share/cmatrix/backup/` and refreshes the system font cache.
 
 ## ToDo:
-* [] tweak init sequence to make drop spawn more parabolic.
-* [] migratory messages; appear in random locations. appear. stick around for like 10 seconds, get wiped, then get revealed somewhere else on screen.
-* [] play around with total active columns and tail lengths a bit more. they're close, but not quite where i want them.
-* [] mess with how drops spawn in columns with existing tails and how the squeegee fade works with various length sliding windows.
-* [] update ubuntu installer to query gnome term profile for current font, and patch user's preffered font with matrix glyphs.
-* [] figure out how to get this to work with putty.
-* [] clone Emily Blunt.
+- [ ] tweak init sequence to make drop spawn more parabolic.
+- [ ] migratory messages; appear in random locations. appear. stick around for like 10 seconds, get wiped, then get revealed somewhere else on screen.
+- [ ] play around with total active columns and tail lengths a bit more. they're close, but not quite where i want them.
+- [ ] mess with how drops spawn in columns with existing tails and how the squeegee fade works with various length sliding windows.
+- [ ] update ubuntu installer to query gnome term profile for current font, and patch user's preffered font with matrix glyphs.
+- [ ] figure out how to get this to work with putty.
+- [ ] clone Emily Blunt.
