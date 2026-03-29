@@ -1,16 +1,25 @@
-# CMatrix CI: Linux amd64 only (CMake)
-os: linux
-arch: amd64
+# Travis CI: Linux (Ubuntu) build smoke only.
+#
+# Cross-platform coverage (Ubuntu LTS + macOS, Clang + Make + Notcurses) is defined in
+# .github/workflows/make-build.yml. Travis no longer offers macOS builders for new work;
+# use GitHub Actions for macOS compatibility checks.
+#
+# Apt packages align with scripts/01_check_install_deps.sh (Ubuntu) and make-build.yml (linux job).
 language: c
-sudo: required
+dist: jammy
+compiler: clang
 
-compiler:
-  - gcc
-  - clang
+addons:
+  apt:
+    packages:
+      - build-essential
+      - clang
+      - pkg-config
+      - libnotcurses-dev
 
 script:
-  - mkdir -p build
-  - cd build
-  - cmake -DCMAKE_C_COMPILER="${CC}" -DCMAKE_BUILD_TYPE=Release ..
-  - cmake --build . -j
+  - clang --version
+  - pkg-config --print-errors --modversion notcurses
+  - make distclean || true
+  - make CC=clang
   - ./cmatrix -V
