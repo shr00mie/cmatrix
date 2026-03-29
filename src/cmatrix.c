@@ -41,7 +41,6 @@
 #include <locale.h>
 #include <math.h>
 #include <pthread.h>
-#include <semaphore.h>
 
 #include <notcurses/notcurses.h>
 
@@ -88,8 +87,8 @@ static const cmatrix_named_color_t cmatrix_named_colors[] = {
     { "gold",       0xffd700u, -1 },
     { "yellow",     0xffff00u, COLOR_YELLOW },
     { "chartreuse", 0x7fff00u, -1 },
-    /* Single canonical trail green (Matrix / lime / springgreen merged here). */
-    { "green",      0x00ff41u, COLOR_GREEN },
+    /* Single canonical trail green (Matrix #00FF41 darkened 3 stops; matches default rain). */
+    { "green",      0x008220u, COLOR_GREEN },
     { "mint",       0xc3ffbfu, -1 },
     { "olive",      0x808000u, -1 },
     { "wheat",      0xf5deb3u, -1 },
@@ -135,40 +134,6 @@ static int parse_rgb_hex_optarg(const char *s, uint32_t *out_rgb) {
     return 1;
 }
 
-void cmatrix_print_named_color_legend(void) {
-    const unsigned ncols = 4u;
-    size_t i, maxw = 0, colw, pad;
-    printf(
-        "\n Named colors (-T tail, -H head, -O message) or truecolor "
-        "#RRGGBB:\n");
-    for (i = 0; i < CMATRIX_NAMED_COLOR_COUNT; i++) {
-        size_t w = strlen(cmatrix_named_colors[i].name);
-        if (w > maxw)
-            maxw = w;
-    }
-    colw = maxw + 2u;
-    for (i = 0; i < CMATRIX_NAMED_COLOR_COUNT; i++) {
-        uint32_t rgb = cmatrix_named_colors[i].rgb;
-        unsigned r = (unsigned)((rgb >> 16) & 0xffu);
-        unsigned g = (unsigned)((rgb >> 8) & 0xffu);
-        unsigned b = (unsigned)(rgb & 0xffu);
-        const char *nm = cmatrix_named_colors[i].name;
-        if (i % (size_t)ncols == 0u)
-            printf("  ");
-        if (r < 48u && g < 48u && b < 48u)
-            printf("\033[38;2;160;160;160m%s\033[0m", nm);
-        else
-            printf("\033[38;2;%u;%u;%um%s\033[0m", r, g, b, nm);
-        pad = colw - strlen(nm);
-        for (; pad > 0u; pad--)
-            putchar(' ');
-        if ((i + 1u) % (size_t)ncols == 0u)
-            printf("\n");
-    }
-    if (CMATRIX_NAMED_COLOR_COUNT % (size_t)ncols != 0u)
-        printf("\n");
-}
-
 /* Return 0 on success: *rgb_out and *legacy_out (-1 = use CUSTOM / HEAD_RGB). */
 static int cmatrix_parse_color_optarg(const char *optarg, uint32_t *rgb_out,
     int *legacy_out) {
@@ -201,6 +166,31 @@ static int cmatrix_parse_color_optarg(const char *optarg, uint32_t *rgb_out,
 #define PATH_MAX 4096
 #endif
 
+/* macOS has no clock_nanosleep(3); Linux/glibc does (with _DEFAULT_SOURCE). */
+static void cmatrix_sleep_until_monotonic(const struct timespec *target)
+{
+#if defined(__APPLE__)
+    struct timespec now, sleepfor;
+
+    for (;;) {
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+            return;
+        if (now.tv_sec > target->tv_sec
+            || (now.tv_sec == target->tv_sec && now.tv_nsec >= target->tv_nsec))
+            return;
+        sleepfor.tv_sec = target->tv_sec - now.tv_sec;
+        sleepfor.tv_nsec = target->tv_nsec - now.tv_nsec;
+        if (sleepfor.tv_nsec < 0) {
+            sleepfor.tv_nsec += 1000000000L;
+            sleepfor.tv_sec--;
+        }
+        (void)nanosleep(&sleepfor, NULL);
+    }
+#else
+    (void)clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, target, NULL);
+#endif
+}
+
 /* ---------------------------------------------------------------------------
  * Terminal font switch: set GNOME Terminal profile font to DejaVu Sans Mono
  * (merged PUA rain glyphs) at start and restore on exit. Uses gsettings only.
@@ -216,7 +206,11 @@ static int did_switch_font;
 
 /* Strip surrounding single quotes and newline from gsettings get output. */
 static void strip_gsettings_value(char *buf, size_t size) {
-    size_t len = strlen(buf);
+    size_t len;
+
+    if (size == 0u)
+        return;
+    len = strnlen(buf, size - 1u);
     while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) buf[--len] = '\0';
     if (len >= 2 && buf[0] == '\'' && buf[len - 1] == '\'') {
         memmove(buf, buf + 1, len - 2);
@@ -284,12 +278,11 @@ void cmatrix_restore_terminal_font(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * Global variables (declared in cmatrix.h). Mode flags (console,
- * lock), the 2D matrix grid, and per-column state: length/spaces/updates,
+ * Global variables (declared in cmatrix.h). Mode flag (lock),
+ * the 2D matrix grid, and per-column state: length/spaces/updates,
  * column_active (which columns are raining), column_clear_buffer (sliding
  * clear zone). signal_status is set by sighandler for the main loop.
  * --------------------------------------------------------------------------- */
-int console = 0;
 int lock = 0;
 cmatrix **matrix = (cmatrix **) NULL;
 int *length = NULL;  /* Length of cols in each line */
@@ -320,6 +313,9 @@ volatile sig_atomic_t signal_status = 0; /* Indicates a caught signal */
 
 struct notcurses *cmatrix_nc = NULL;
 static struct ncplane *cmatrix_plane = NULL;
+#if defined(__APPLE__)
+static FILE *cmatrix_notcurses_outfp;
+#endif
 
 /* Snapshot of matrix at frame start: workers read neighbors from here, write live matrix. */
 static cmatrix *matrix_snap = NULL;
@@ -327,8 +323,12 @@ static cmatrix *matrix_snap = NULL;
 #define CMATRIX_MAX_WORKERS 8
 static int cmatrix_num_workers = 1;
 static pthread_t cmatrix_worker_threads[CMATRIX_MAX_WORKERS];
-static sem_t cmatrix_sem_start[CMATRIX_MAX_WORKERS];
-static sem_t cmatrix_sem_done[CMATRIX_MAX_WORKERS];
+static pthread_mutex_t cmatrix_mtx_start[CMATRIX_MAX_WORKERS];
+static pthread_cond_t cmatrix_cv_start[CMATRIX_MAX_WORKERS];
+static int cmatrix_start_pulse[CMATRIX_MAX_WORKERS];
+static pthread_mutex_t cmatrix_mtx_done[CMATRIX_MAX_WORKERS];
+static pthread_cond_t cmatrix_cv_done[CMATRIX_MAX_WORKERS];
+static int cmatrix_done_pulse[CMATRIX_MAX_WORKERS];
 static volatile int cmatrix_workers_running = 0;
 static pthread_mutex_t cmatrix_spawn_mx = PTHREAD_MUTEX_INITIALIZER;
 
@@ -372,14 +372,93 @@ void cmatrix_notcurses_stop(void) {
         cmatrix_nc = NULL;
         cmatrix_plane = NULL;
     }
+#if defined(__APPLE__)
+    if (cmatrix_notcurses_outfp) {
+        fclose(cmatrix_notcurses_outfp);
+        cmatrix_notcurses_outfp = NULL;
+    }
+#endif
 }
 
-/* Standard palette -> RGB (matches typical terminal colors; tail green is Matrix #00FF41). */
+#if defined(__APPLE__) && defined(HAVE_SYS_IOCTL_H)
+/* Terminal.app: notcurses sometimes leaves the standard plane at 1 row while
+ * TIOCGWINSZ on stdout reports the real size; ncplane_resize() cannot resize the
+ * stdplane. Build a separate full-screen pile from kernel geometry and draw there.
+ * Set CMATRIX_NO_EXTRA_PILE to disable. */
+static void cmatrix_try_macos_fullscreen_pile(void)
+{
+    struct winsize ws;
+    ncplane_options popts;
+    struct ncplane *p;
+
+    if (getenv("CMATRIX_NO_EXTRA_PILE") != NULL)
+        return;
+    if (cmatrix_nc == NULL)
+        return;
+    memset(&ws, 0, sizeof(ws));
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0)
+        return;
+    if (ws.ws_row < 1 || ws.ws_col < 1)
+        return;
+    memset(&popts, 0, sizeof(popts));
+    popts.y = 0;
+    popts.x = 0;
+    popts.rows = (unsigned)ws.ws_row;
+    popts.cols = (unsigned)ws.ws_col;
+    popts.name = "cmatrix";
+    p = ncpile_create(cmatrix_nc, &popts);
+    if (p != NULL)
+        cmatrix_plane = p;
+}
+
+/* ncpile_render() always runs notcurses_resize_internal(), which reapplies
+ * TIOCGWINSZ to THIS pile. If the library's tty fd reports 1 row but stdout's
+ * ioctl matches the real terminal, the aux pile shrinks to 1 — undo from stdout. */
+static int cmatrix_macos_fix_aux_pile_after_resize_internal(void)
+{
+    struct winsize ws;
+    unsigned py, px;
+
+    if (cmatrix_plane == NULL || cmatrix_nc == NULL)
+        return 0;
+    if (cmatrix_plane == notcurses_stdplane(cmatrix_nc))
+        return 0;
+    memset(&ws, 0, sizeof(ws));
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0 || ws.ws_row < 1 || ws.ws_col < 1)
+        return 0;
+    ncplane_dim_yx(cmatrix_plane, &py, &px);
+    if ((unsigned)ws.ws_row == py && (unsigned)ws.ws_col == px)
+        return 0;
+    (void)ncplane_resize_simple(cmatrix_plane, (unsigned)ws.ws_row, (unsigned)ws.ws_col);
+    return 1;
+}
+#endif
+
+/* Render + rasterize the pile that owns cmatrix_plane (std pile or macOS aux pile). */
+static void cmatrix_present_frame(void)
+{
+    if (cmatrix_plane == NULL || cmatrix_nc == NULL)
+        return;
+    if (ncpile_render(cmatrix_plane) != 0)
+        return;
+#if defined(__APPLE__) && defined(HAVE_SYS_IOCTL_H)
+    if (cmatrix_macos_fix_aux_pile_after_resize_internal()) {
+        if (ncpile_render(cmatrix_plane) != 0)
+            return;
+    }
+#endif
+    (void)ncpile_rasterize(cmatrix_plane);
+}
+
+static uint32_t rgb_lerp_to_black(uint32_t fg, unsigned char fade_amt);
+static uint32_t cmatrix_default_tail_green_rgb(void);
+
+/* Standard palette -> RGB (default tail green: classic Matrix #00FF41 darkened 3 stops). */
 static uint32_t cmatrix_palette_rgb(int color_idx) {
     switch (color_idx) {
     case COLOR_BLACK:   return 0x000000u;
     case COLOR_RED:     return 0xff0000u;
-    case COLOR_GREEN:   return 0x00ff41u;
+    case COLOR_GREEN:   return cmatrix_default_tail_green_rgb();
     case COLOR_YELLOW:  return 0xffff00u;
     case COLOR_BLUE:    return 0x0000ffu;
     case COLOR_MAGENTA: return 0xff00ffu;
@@ -390,7 +469,7 @@ static uint32_t cmatrix_palette_rgb(int color_idx) {
     case COLOR_CUSTOM_TAIL:
     case COLOR_CUSTOM_MSG:
         return 0x808080u; /* rgb_tail / rgb_msg hold real values */
-    default:            return 0x00ff41u;
+    default:            return cmatrix_default_tail_green_rgb();
     }
 }
 
@@ -404,6 +483,47 @@ static uint32_t rgb_lerp_to_black(uint32_t fg, unsigned char fade_amt) {
     fb = (fb * t) / 255u;
     return ((uint32_t)fr << 16) | ((uint32_t)fg_g << 8) | (uint32_t)fb;
 }
+
+/* Classic Matrix #00FF41, darkened by three −1-stop lerps (same fade step as tail glyph ramp). */
+static uint32_t cmatrix_default_tail_green_rgb(void) {
+    uint32_t g = 0x00ff41u;
+    g = rgb_lerp_to_black(g, 51);
+    g = rgb_lerp_to_black(g, 51);
+    g = rgb_lerp_to_black(g, 51);
+    return g;
+}
+
+/* Lerp fg toward white; amt 0 = fg, 255 = white. */
+static uint32_t rgb_lerp_to_white(uint32_t fg, unsigned char amt) {
+    unsigned fr = (unsigned)((fg >> 16) & 0xffu);
+    unsigned fg_g = (unsigned)((fg >> 8) & 0xffu);
+    unsigned fb = (unsigned)(fg & 0xffu);
+    unsigned t = (unsigned)amt;
+    fr = fr + (((255u - fr) * t) / 255u);
+    fg_g = fg_g + (((255u - fg_g) * t) / 255u);
+    fb = fb + (((255u - fb) * t) / 255u);
+    return ((uint32_t)fr << 16) | ((uint32_t)fg_g << 8) | (uint32_t)fb;
+}
+
+/* Tail glyph color: five stops relative to active tail RGB (−4..+4, even). */
+static uint32_t rgb_tail_at_stop(uint32_t base, int stop) {
+    switch (stop) {
+    case -4:
+        return rgb_lerp_to_black(base, 102);
+    case -2:
+        return rgb_lerp_to_black(base, 51);
+    case 0:
+        return base;
+    case 2:
+        return rgb_lerp_to_white(base, 51);
+    case 4:
+        return rgb_lerp_to_white(base, 102);
+    default:
+        return base;
+    }
+}
+
+static const int tail_glyph_stop_table[5] = { -4, -2, 0, 2, 4 };
 
 /* Encode BMP codepoint (0..0xFFFF) to UTF-8 for ncplane_putegc (UTF-8 locale). */
 static int codepoint_to_utf8(unsigned int u, unsigned char *buf) {
@@ -734,20 +854,28 @@ static rendered_cell get_rendered_cell(int i, int j, const char *msg, int msg_le
                     r.fg_rgb = rgb_lerp_to_black(cmatrix_palette_rgb(base_color), cell.sweegie_fade);
                 r.bold = 0;
             } else {
-                r.fg_rgb = cell.is_head ? rgb_head : rgb_tail;
-                r.bold = cell.is_head ? (bold ? 1 : 0) : ((bold && (v % 2 == 0)) ? 1 : 0);
+                if (cell.is_head) {
+                    r.fg_rgb = rgb_head;
+                    r.bold = bold ? 1 : 0;
+                } else {
+                    int tstop = tail_glyph_stop_table[(unsigned)v % 5u];
+                    r.fg_rgb = rgb_tail_at_stop(rgb_tail, tstop);
+                    r.bold = (bold && (v % 2 == 0)) ? 1 : 0;
+                }
             }
             return r;
         }
     }
 }
 
-/* Draw a single cell on the standard plane (truecolor + optional bold). */
+/* Draw a single cell on the standard plane (truecolor fg + optional bold). */
 static void draw_cell_at(struct ncplane *n, int line, int col, const rendered_cell *r, int use_ascii_fallback)
 {
     unsigned tr = (unsigned)((r->fg_rgb >> 16) & 0xffu);
     unsigned tg = (unsigned)((r->fg_rgb >> 8) & 0xffu);
     unsigned tb = (unsigned)(r->fg_rgb & 0xffu);
+
+    (void)use_ascii_fallback;
     (void)ncplane_set_fg_rgb8(n, tr, tg, tb);
     if (r->bold)
         ncplane_set_styles(n, NCSTYLE_BOLD);
@@ -839,7 +967,12 @@ static void run_column_simulation(int j,
                     }
                     matrix[i][j].is_head = false;
                     if (gsim_changes) {
-                        if (rand_r(rng) % 8 == 0) {
+                        int regen;
+                        if (bold)
+                            regen = (rand_r(rng) % 100) < 10;
+                        else
+                            regen = (rand_r(rng) % 8 == 0);
+                        if (regen) {
                             matrix[i][j].val = random_char_avoiding_neighbors(i, j, rng, matrix_snap);
                             matrix[i][j].sweegie_fade = 0;
                         }
@@ -933,33 +1066,54 @@ static void run_column_simulation(int j,
 static void *cmatrix_worker_main(void *arg) {
     struct cmatrix_worker_arg *wa = (struct cmatrix_worker_arg *)arg;
     int j;
-    while (cmatrix_workers_running) {
-        if (sem_wait(&cmatrix_sem_start[wa->thread_id]) != 0)
-            break;
+    int wid = wa->thread_id;
+
+    while (1) {
+        pthread_mutex_lock(&cmatrix_mtx_start[wid]);
+        while (!cmatrix_start_pulse[wid] && cmatrix_workers_running)
+            pthread_cond_wait(&cmatrix_cv_start[wid], &cmatrix_mtx_start[wid]);
+        cmatrix_start_pulse[wid] = 0;
+        pthread_mutex_unlock(&cmatrix_mtx_start[wid]);
+
         if (!cmatrix_workers_running) {
-            (void)sem_post(&cmatrix_sem_done[wa->thread_id]);
+            pthread_mutex_lock(&cmatrix_mtx_done[wid]);
+            cmatrix_done_pulse[wid] = 1;
+            pthread_cond_signal(&cmatrix_cv_done[wid]);
+            pthread_mutex_unlock(&cmatrix_mtx_done[wid]);
             break;
         }
         for (j = wa->thread_id; j < screen_cols; j += wa->num_workers) {
             run_column_simulation(j, gsim_head_color, gsim_tail_color, gsim_bold, &wa->rng);
         }
-        (void)sem_post(&cmatrix_sem_done[wa->thread_id]);
+        pthread_mutex_lock(&cmatrix_mtx_done[wid]);
+        cmatrix_done_pulse[wid] = 1;
+        pthread_cond_signal(&cmatrix_cv_done[wid]);
+        pthread_mutex_unlock(&cmatrix_mtx_done[wid]);
     }
     return NULL;
 }
 
 static void cmatrix_stop_workers(void) {
     int w;
+    int n;
+
     if (cmatrix_num_workers <= 0)
         return;
+    n = cmatrix_num_workers;
     cmatrix_workers_running = 0;
-    for (w = 0; w < cmatrix_num_workers; w++)
-        (void)sem_post(&cmatrix_sem_start[w]);
-    for (w = 0; w < cmatrix_num_workers; w++)
+    for (w = 0; w < n; w++) {
+        pthread_mutex_lock(&cmatrix_mtx_start[w]);
+        cmatrix_start_pulse[w] = 1;
+        pthread_cond_signal(&cmatrix_cv_start[w]);
+        pthread_mutex_unlock(&cmatrix_mtx_start[w]);
+    }
+    for (w = 0; w < n; w++)
         (void)pthread_join(cmatrix_worker_threads[w], NULL);
-    for (w = 0; w < cmatrix_num_workers; w++) {
-        (void)sem_destroy(&cmatrix_sem_start[w]);
-        (void)sem_destroy(&cmatrix_sem_done[w]);
+    for (w = 0; w < n; w++) {
+        pthread_mutex_destroy(&cmatrix_mtx_start[w]);
+        pthread_cond_destroy(&cmatrix_cv_start[w]);
+        pthread_mutex_destroy(&cmatrix_mtx_done[w]);
+        pthread_cond_destroy(&cmatrix_cv_done[w]);
     }
     cmatrix_num_workers = 0;
 }
@@ -973,8 +1127,12 @@ static void cmatrix_start_workers(void) {
         cmatrix_num_workers = 1;
     cmatrix_workers_running = 1;
     for (w = 0; w < cmatrix_num_workers; w++) {
-        (void)sem_init(&cmatrix_sem_start[w], 0, 0);
-        (void)sem_init(&cmatrix_sem_done[w], 0, 0);
+        cmatrix_start_pulse[w] = 0;
+        cmatrix_done_pulse[w] = 0;
+        (void)pthread_mutex_init(&cmatrix_mtx_start[w], NULL);
+        (void)pthread_cond_init(&cmatrix_cv_start[w], NULL);
+        (void)pthread_mutex_init(&cmatrix_mtx_done[w], NULL);
+        (void)pthread_cond_init(&cmatrix_cv_done[w], NULL);
         cmatrix_worker_args[w].thread_id = w;
         cmatrix_worker_args[w].num_workers = cmatrix_num_workers;
         cmatrix_worker_args[w].rng = (unsigned int)(time(NULL) ^ (unsigned int)(w * 0x9e3779b9u));
@@ -1108,7 +1266,8 @@ void sighandler(int s) {
 
 /* ---------------------------------------------------------------------------
  * Handle terminal resize (SIGWINCH): read new size via TIOCGWINSZ,
- * clamp to minimum 10x10, then var_init() and restart worker threads.
+ * refresh (notcurses_resize + clear), set screen_lines/cols from stddim,
+ * then var_init() and restart worker threads.
  * --------------------------------------------------------------------------- */
 void resize_screen(void) {
     char *tty;
@@ -1124,22 +1283,63 @@ void resize_screen(void) {
     if (fd == -1)
         return;
     result = ioctl(fd, TIOCGWINSZ, &win);
-    if (result == -1)
+    if (result == -1) {
+        close(fd);
         return;
-    screen_cols = win.ws_col;
-    screen_lines = win.ws_row;
+    }
     close(fd);
 
-    if (screen_lines < 10) {
-        screen_lines = 10;
+    cmatrix_stop_workers();
+#if defined(__APPLE__) && defined(HAVE_SYS_IOCTL_H)
+    if (cmatrix_nc != NULL && cmatrix_plane != NULL &&
+        cmatrix_plane != notcurses_stdplane(cmatrix_nc) &&
+        win.ws_row > 0 && win.ws_col > 0) {
+        (void)ncplane_resize_simple(cmatrix_plane, (unsigned)win.ws_row, (unsigned)win.ws_col);
+        {
+            unsigned dimy = 24, dimx = 80;
+
+            ncplane_dim_yx(cmatrix_plane, &dimy, &dimx);
+            screen_lines = (int)dimy;
+            screen_cols = (int)dimx;
+        }
+        if (screen_lines < 1)
+            screen_lines = 1;
+        if (screen_cols < 1)
+            screen_cols = 1;
+        var_init();
+        cmatrix_start_workers();
+        return;
     }
-    if (screen_cols < 10) {
-        screen_cols = 10;
+#endif
+    if (cmatrix_nc != NULL) {
+        (void)notcurses_refresh(cmatrix_nc, &r, &c);
+        {
+            unsigned dimy = 24, dimx = 80;
+
+            notcurses_stddim_yx(cmatrix_nc, &dimy, &dimx);
+            screen_lines = (int)dimy;
+            screen_cols = (int)dimx;
+        }
+#ifdef HAVE_SYS_IOCTL_H
+        if (screen_lines < 1)
+            screen_lines = 1;
+        if (screen_cols < 1)
+            screen_cols = 1;
+#else
+        if (screen_lines < 10)
+            screen_lines = 10;
+        if (screen_cols < 10)
+            screen_cols = 10;
+#endif
+    } else {
+        screen_cols = win.ws_col;
+        screen_lines = win.ws_row;
+        if (screen_lines < 10)
+            screen_lines = 10;
+        if (screen_cols < 10)
+            screen_cols = 10;
     }
 
-    cmatrix_stop_workers();
-    if (cmatrix_nc != NULL)
-        (void)notcurses_refresh(cmatrix_nc, &r, &c);
     var_init();
     cmatrix_start_workers();
 }
@@ -1156,14 +1356,13 @@ int main(int argc, char *argv[]) {
     int screensaver = 0;
     int asynch = 0;
     int bold = 0;
-    int force = 0;
-    /* Default ~23.976 fps (film cadence). Use -F for higher fps (e.g. 60) when you want it. */
-    int delay_ms = (int)(1000.0 / 23.976 + 0.5);
+    /* Default 24 fps. -F selects 12–60 fps. */
+    int delay_ms = (int)(1000.0 / 24.0 + 0.5);
     int head_color = COLOR_HEAD_RGB;
     int tail_color = COLOR_GREEN;
     int message_color = COLOR_RED;
     uint32_t rgb_head = 0xc3ffbfu;
-    uint32_t rgb_tail = 0x00ff41u;
+    uint32_t rgb_tail = cmatrix_default_tail_green_rgb();
     uint32_t rgb_msg = 0xff0000u;
     int pause = 0;
     int classic = 0;
@@ -1172,14 +1371,14 @@ int main(int argc, char *argv[]) {
 
     cmatrix_main_rng = (unsigned int)time(NULL);
 
-    /* -c classic mode; UTF-8 locale required for correct display */
+    /* -c matrix glyph mode; UTF-8 locale required for correct display */
     (void) setlocale(LC_ALL, "");
     if (setlocale(LC_CTYPE, "C.UTF-8") == NULL)
         (void) setlocale(LC_CTYPE, "");
 
     /* --- Command-line option parsing (getopt) --- */
     opterr = 0;
-    while ((optchr = getopt(argc, argv, "abcfhlLnskVM:T:H:O:F:")) != EOF) {
+    while ((optchr = getopt(argc, argv, "abchskVM:T:H:O:F:")) != EOF) {
         switch (optchr) {
         case 's':
             screensaver = 1;
@@ -1194,8 +1393,8 @@ int main(int argc, char *argv[]) {
             uint32_t rgb;
             int leg;
             if (cmatrix_parse_color_optarg(optarg, &rgb, &leg) != 0)
-                c_die(" Invalid tail color (-T). Use a name from -h or "
-                       "#RRGGBB (leading #).\n");
+                c_die(" Invalid tail color (-T). Use a color name or hex "
+                       "(#RRGGBB).\n");
             rgb_tail = rgb;
             if (leg >= 0)
                 tail_color = leg;
@@ -1207,8 +1406,8 @@ int main(int argc, char *argv[]) {
             uint32_t rgb;
             int leg;
             if (cmatrix_parse_color_optarg(optarg, &rgb, &leg) != 0)
-                c_die(" Invalid head color (-H). Use a name from -h or "
-                       "#RRGGBB (leading #).\n");
+                c_die(" Invalid head color (-H). Use a color name or hex "
+                       "(#RRGGBB).\n");
             rgb_head = rgb;
             if (leg >= 0)
                 head_color = leg;
@@ -1220,8 +1419,8 @@ int main(int argc, char *argv[]) {
             uint32_t rgb;
             int leg;
             if (cmatrix_parse_color_optarg(optarg, &rgb, &leg) != 0)
-                c_die(" Invalid message color (-O). Use a name from -h or "
-                       "#RRGGBB (leading #).\n");
+                c_die(" Invalid message color (-O). Use a color name or hex "
+                       "(#RRGGBB).\n");
             rgb_msg = rgb;
             if (leg >= 0)
                 message_color = leg;
@@ -1232,24 +1431,8 @@ int main(int argc, char *argv[]) {
         case 'c':
             classic = 1;
             break;
-        case 'f':
-            force = 1;
-            break;
-        case 'l':
-            console = 1;
-            break;
-        case 'L':
-            lock = 1;
-            //if -M was used earlier, don't override it
-            if (0 == strncmp(msg, "", 1)) {
-                msg = "Computer locked.";
-            }
-            break;
         case 'M':
             msg = strdup(optarg);
-            break;
-        case 'n':
-            bold = 0;
             break;
         case 'h':
         case '?':
@@ -1257,12 +1440,12 @@ int main(int argc, char *argv[]) {
             exit(0);
         case 'F': {
             double fps = atof(optarg);
-            if (fps >= 1.0 && fps <= 120.0) {
+            if (fps >= 12.0 && fps <= 60.0) {
                 delay_ms = (int)(1000.0 / fps + 0.5);
                 if (delay_ms < 1)
                     delay_ms = 1;
             } else {
-                c_die(" -F fps must be between 1 and 120 (e.g. 24, 60).\n");
+                c_die(" -F fps must be between 12 and 60 (e.g. 24, 60).\n");
             }
             break;
         }
@@ -1286,7 +1469,7 @@ int main(int argc, char *argv[]) {
         const char *term = getenv("TERM");
         if (!term || strcmp(term, "dumb") == 0) {
             classic = 0;
-            fprintf(stderr, "cmatrix: -c disabled (TERM is dumb or unset). Run in a proper terminal for Japanese mode.\n");
+            fprintf(stderr, "cmatrix: -c disabled (TERM is dumb or unset). Run in a proper terminal for matrix glyph mode.\n");
         }
     }
 
@@ -1294,9 +1477,6 @@ int main(int argc, char *argv[]) {
     static int use_ascii_fallback = -1;
     if (use_ascii_fallback < 0)
         use_ascii_fallback = (getenv("CMATRIX_ASCII_FALLBACK") != NULL) ? 1 : 0;
-
-    if (force && strcmp("linux", getenv("TERM")))
-        setenv("TERM", "linux", 1);
 
     /* Switch terminal font to DejaVu Sans Mono (merged rain PUA); restore on exit. */
     {
@@ -1308,48 +1488,95 @@ int main(int argc, char *argv[]) {
     /* --- Notcurses (truecolor); we handle SIGWINCH ourselves --- */
     {
         notcurses_options ncopts;
-        int fi;
+
         memset(&ncopts, 0, sizeof(ncopts));
         ncopts.flags = NCOPTION_SUPPRESS_BANNERS | NCOPTION_NO_WINCH_SIGHANDLER;
-        cmatrix_nc = notcurses_init(&ncopts, stdout);
-        if (cmatrix_nc == NULL)
-            c_die("cmatrix: notcurses_init failed (requires a real terminal and UTF-8 locale).\n");
+        /* Workaround for broken alternate screen (try if the display is garbled). */
+        if (getenv("CMATRIX_NO_ALTERNATE_SCREEN"))
+            ncopts.flags |= NCOPTION_NO_ALTERNATE_SCREEN;
+
+        {
+            FILE *ncout = stdout;
+
+#if defined(__APPLE__)
+            /* Upstream USAGE.md: notcurses_init() "You'll usually want stdout".
+             * notcurses_core_init() maps NULL -> stdout (it does not open /dev/tty).
+             * A write-only fopen("/dev/tty","w") was an experiment for winsize;
+             * keep it opt-in only: CMATRIX_USE_DEVTTY=1. */
+            cmatrix_notcurses_outfp = NULL;
+            if (isatty(STDOUT_FILENO) && getenv("CMATRIX_USE_DEVTTY") != NULL) {
+                FILE *tf = fopen("/dev/tty", "w");
+
+                if (tf != NULL) {
+                    cmatrix_notcurses_outfp = tf;
+                    ncout = cmatrix_notcurses_outfp;
+                }
+            }
+#endif
+            cmatrix_nc = notcurses_init(&ncopts, ncout);
+            if (cmatrix_nc == NULL) {
+#if defined(__APPLE__)
+                if (cmatrix_notcurses_outfp) {
+                    fclose(cmatrix_notcurses_outfp);
+                    cmatrix_notcurses_outfp = NULL;
+                }
+#endif
+                c_die("cmatrix: notcurses_init failed (requires a real terminal and UTF-8 locale).\n");
+            }
+        }
         cmatrix_plane = notcurses_stdplane(cmatrix_nc);
+
+#if defined(__APPLE__)
+        /* notcurses#2812: Terminal.app can leave palette-query bytes in the input
+         * queue; drain nonblocking reads so the main loop does not treat them as keys. */
+        if (getenv("TERM_PROGRAM") && strcmp(getenv("TERM_PROGRAM"), "Apple_Terminal") == 0) {
+            int d;
+
+            for (d = 0; d < 4096; d++) {
+                uint32_t id = notcurses_get_nblock(cmatrix_nc, NULL);
+
+                if (id == 0 || id == (uint32_t)-1)
+                    break;
+            }
+        }
+#endif
         signal(SIGINT, sighandler);
         signal(SIGQUIT, sighandler);
         signal(SIGWINCH, sighandler);
         signal(SIGTSTP, sighandler);
     }
 
-    if (console) {
-#ifdef HAVE_CONSOLECHARS
-        if (va_system("consolechars -f matrix") != 0) {
-            c_die
-                (" There was an error running consolechars. Please make sure the\n"
-                 " consolechars program is in your $PATH.  Try running \"consolechars -f matrix\" by hand.\n");
-        }
-#elif defined(HAVE_SETFONT)
-        if (va_system("setfont matrix") != 0) {
-            c_die
-                (" There was an error running setfont. Please make sure the\n"
-                 " setfont program is in your $PATH.  Try running \"setfont matrix\" by hand.\n");
-        }
-#else
-        c_die(" Neither consolechars nor setfont is available; cannot use -l (Linux console mode).\n");
-#endif
-    }
-
     /* --- Screen size and one-time matrix init --- */
     {
         unsigned dimy = 24, dimx = 80;
-        notcurses_stddim_yx(cmatrix_nc, &dimy, &dimx);
+
+#if defined(__APPLE__) && defined(HAVE_SYS_IOCTL_H)
+        cmatrix_try_macos_fullscreen_pile();
+#endif
+        /* ncpile_render() runs notcurses_resize_internal() (TIOCGWINSZ + pile sync). */
+        if (ncpile_render(cmatrix_plane) != 0)
+            c_die("cmatrix: ncpile_render failed (internal error).\n");
+#if defined(__APPLE__) && defined(HAVE_SYS_IOCTL_H)
+        if (cmatrix_macos_fix_aux_pile_after_resize_internal()) {
+            if (ncpile_render(cmatrix_plane) != 0)
+                c_die("cmatrix: ncpile_render failed (internal error).\n");
+        }
+#endif
+        ncplane_dim_yx(cmatrix_plane, &dimy, &dimx);
         screen_lines = (int)dimy;
         screen_cols = (int)dimx;
     }
+#ifdef HAVE_SYS_IOCTL_H
+    if (screen_lines < 1)
+        screen_lines = 1;
+    if (screen_cols < 1)
+        screen_cols = 1;
+#else
     if (screen_lines < 10)
         screen_lines = 10;
     if (screen_cols < 10)
         screen_cols = 10;
+#endif
 
     var_init();
     cmatrix_start_workers();
@@ -1557,10 +1784,19 @@ int main(int argc, char *argv[]) {
         gsim_msg_y = msg_y;
         {
             int w;
-            for (w = 0; w < cmatrix_num_workers; w++)
-                (void)sem_post(&cmatrix_sem_start[w]);
-            for (w = 0; w < cmatrix_num_workers; w++)
-                (void)sem_wait(&cmatrix_sem_done[w]);
+            for (w = 0; w < cmatrix_num_workers; w++) {
+                pthread_mutex_lock(&cmatrix_mtx_start[w]);
+                cmatrix_start_pulse[w] = 1;
+                pthread_cond_signal(&cmatrix_cv_start[w]);
+                pthread_mutex_unlock(&cmatrix_mtx_start[w]);
+            }
+            for (w = 0; w < cmatrix_num_workers; w++) {
+                pthread_mutex_lock(&cmatrix_mtx_done[w]);
+                while (!cmatrix_done_pulse[w])
+                    pthread_cond_wait(&cmatrix_cv_done[w], &cmatrix_mtx_done[w]);
+                cmatrix_done_pulse[w] = 0;
+                pthread_mutex_unlock(&cmatrix_mtx_done[w]);
+            }
         }
 
         for (j = 0; j < screen_cols; j++) {
@@ -1615,7 +1851,7 @@ int main(int argc, char *argv[]) {
 
         /* Paused + static screen: skip render (no cell changes). */
         if (!(pause && !full_redraw_pending)) {
-            (void)notcurses_render(cmatrix_nc);
+            cmatrix_present_frame();
         }
 
         if (full_redraw_pending)
@@ -1633,7 +1869,7 @@ int main(int argc, char *argv[]) {
                 frame_next.tv_sec++;
                 frame_next.tv_nsec -= 1000000000L;
             }
-            (void) clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &frame_next, NULL);
+            cmatrix_sleep_until_monotonic(&frame_next);
         }
     }
     finish();

@@ -36,10 +36,9 @@ typedef struct cmatrix {
 
 /* ---------------------------------------------------------------------------
  * Globals (defined in cmatrix.c). Used by main loop and util.c.
- * console/lock = mode flags; matrix/length/spaces/updates = per-column
+ * lock = mode flag; matrix/length/spaces/updates = per-column
  * state; signal_status = caught signal for main loop to handle.
  * --------------------------------------------------------------------------- */
-extern int console;
 extern int lock;
 extern cmatrix **matrix;
 extern int *length;
@@ -51,10 +50,9 @@ extern volatile sig_atomic_t signal_status;
 extern struct notcurses *cmatrix_nc;
 
 /* ---------------------------------------------------------------------------
- * Utilities (implemented in util.c): printf-style system(), clean exit,
+ * Utilities (implemented in util.c): clean exit,
  * fatal error, usage/version, and non-NULL malloc wrapper.
  * --------------------------------------------------------------------------- */
-int va_system(char *str, ...);
 void finish(void);
 void c_die(char *msg, ...);
 void usage(void);
@@ -73,8 +71,5 @@ void resize_screen(void);
 /* Restore terminal font when exiting (called from finish/c_die). No-op if font was not switched. */
 void cmatrix_restore_terminal_font(void);
 void cmatrix_notcurses_stop(void);
-
-/* Truecolor names + #RRGGBB (see usage / cmatrix_print_named_color_legend). */
-void cmatrix_print_named_color_legend(void);
 
 #endif /* CMATRIX_H */
