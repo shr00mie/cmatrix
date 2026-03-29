@@ -11,13 +11,13 @@ Changes in this fork relative to upstream [cmatrix](https://github.com/abishekva
 - **Head color (`-H`)** — Set color of the drop head (default: white).
 - **Tail color (`-T`)** — Set color of the matrix tail (default: green). Replaces upstream `-C` (same behavior, new letter).
 - **Message color (`-O`)** — Set color of the `-M` message (default: red).
-- **Frame rate (`-F`)** — Set frame rate in fps (e.g. `23.976`, `30`, `60`). Default 23.976 fps.
-- **Source** — Head, tail, and message colors are variables used throughout; default frame delay 23.976 fps.
+- **Frame rate (`-F`)** — Set frame rate in fps (allowed 12–60; e.g. `24`, `30`, `60`). Default 24 fps.
+- **Source** — Head, tail, and message colors are variables used throughout; default frame delay 24 fps.
 - **Version output** — `-V` credits original authors and "This version by shr00mie."
 
 ### Changed
 
-- **Frame rate** — No `-u` or keyboard 0–9. Rate is fixed by default (23.976 fps) or set with `-F`.
+- **Frame rate** — No `-u` or keyboard 0–9. Rate is fixed by default (24 fps) or set with `-F` (12–60).
 - **Bold** — Only off or random bold; "all bold" mode (`-B`) removed.
 - **Active columns** — Fraction of columns initialized for new drops increased from ~75% to ~85%.
 - **Platform** — Linux (amd64) only; configure and CMake enforce this.

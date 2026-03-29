@@ -3,15 +3,13 @@
 CMatrix
 .SH SYNOPSIS
 .B cmatrix
-[\-abcfhlohnsmV] [\-F fps] [\-T color] [\-H color] [\-O color]
+[\-abchskV] [\-F fps] [\-T color] [\-H color] [\-O color] [\-M message]
 .SH DESCRIPTION
 Shows a scrolling 'Matrix' like screen in Linux.
 .PP
 Rendering uses Notcurses (24-bit color, UTF-8). Build and run-time require \fBlibnotcurses\fR (e.g. Debian: \fBlibnotcurses-dev\fR).
 .PP
-Default rain uses Unicode PUA \fBU+E000\fR–\fBU+E069\fR (106 glyphs) from a merged DejaVu font. \fBmake install\fR installs \fIDejaVuSansMono_working.ttf\fR as \fIDejaVuSansMono.ttf\fR into \fI/usr/share/fonts/truetype/\fR and runs \fBfc-cache\fR. User-local install path is \fI~/.local/share/fonts/DejaVuSansMono.ttf\fR. Set your terminal font to \fIDejaVu Sans Mono\fR so those code points render correctly.
-.PP
-For Japanese mode (\-c), the build may still install Matrix Code fonts system-wide; set your terminal to "Matrix Code" for \-c, or use Matrix Code NFI (DaFont). Console mode (\-l) uses setfont/consolechars; install a console font separately for \-l.
+Default rain uses Unicode PUA \fBU+E000\fR–\fBU+E069\fR (106 glyphs) from a merged DejaVu font. \fBmake install\fR installs the patched font as \fI~/.local/share/fonts/DejaVuSansMono.ttf\fR on Linux (runs \fBfc-cache -fv\fR on that directory) and as \fI~/Library/Fonts/DejaVuSansMono.ttf\fR on macOS. Set your terminal font to \fIDejaVu Sans Mono\fR so those code points render correctly.
 .SS OPTIONS
 .TP
 .I "\-a"
@@ -23,31 +21,19 @@ Bold characters on
 .I "\-B"
 All bold characters (overrides \-b)
 .TP
-.I "\-f"
-Force the linux $TERM type to be on
-.TP
-.I "\-l"
-Linux mode (uses setfont/consolechars; install a console font for \-l)
-.TP
 .I "\-o"
 Use old-style scrolling
 .TP
 .I "\-c"
-Japanese mode: draws Matrix Code glyphs (32 half-width Katakana + 95 Basic Latin, one column each) using the wide-character API. Requires UTF-8 locale and a font with those glyphs (Matrix Code is installed by the build). Set
+Matrix glyphs mode: draws the movie-style column stream (Unicode halfwidth forms U+FF66–U+FF9D plus Basic Latin, one column per cell) using the wide-character API. Requires UTF-8 locale and a terminal font that includes those code points. Set
 .B CMATRIX_ASCII_FALLBACK=1
 to use ASCII placeholders instead.
-.TP
-.I "\-L"
-Locks cmatrix, Unable to quit
 .TP
 .I "\-h, \-?"
 Print usage and exit
 .TP
 .I "\-k"
 Every characters change 
-.TP
-.I "\-n"
-No bold characters (overrides \-b)
 .TP
 .I "\-s"
 "Screensaver" mode, exits on first keystroke
@@ -56,25 +42,18 @@ No bold characters (overrides \-b)
 Print version information and exit
 .TP
 .I "\-F fps"
-Frame rate in frames per second, 1–120 (default ~23.976; e.g. 60 for high refresh).
+Frame rate in frames per second, 12–60 (default 24).
 .TP
 .I "\-T color"
-Use this color for matrix tail (default green).
-Argument is a named color (see
-.B \-h
-list) or truecolor
-.I #RRGGBB
-with a leading \fB#\fR (e.g. \fB#00ff41\fR).
+Matrix tail color (default green).
 .TP
 .I "\-H color"
-Use this color for the drop head (default #c3ffbf).
-Same rules as
-.BR \-T .
+Drop head color (default mint).
 .TP
 .I "\-O color"
-Use this color for the \-M message (default red).
-Same rules as
-.BR \-T .
+\fB\-M\fR message color (default red).
+.PP
+For \fB\-T\fR, \fB\-H\fR, and \fB\-O\fR, each \fIcolor\fR is a name (string) or hex \fI#RRGGBB\fR with a leading \fB#\fR.
 .TP
 .I "\-M message"
 Add a message in the center of cmatrix
@@ -103,17 +82,22 @@ Quit the program
 .B CMATRIX_ASCII_FALLBACK
 If set, \fB\-c\fR always uses ASCII placeholders (#0-9A-F).
 .TP
+.B CMATRIX_NO_ALTERNATE_SCREEN
+If set, Notcurses is started without the alternate screen (may help garbled display on some terminals).
+.TP
+.B CMATRIX_USE_DEVTTY
+If set on macOS, pass a write\-only \fI/dev/tty\fR \fBFILE\fR to \fBnotcurses_init\fR instead of \fBstdout\fR. Default follows upstream guidance (\fBstdout\fR). Use only if an environment specifically needs this split.
+.TP
+.B CMATRIX_NO_EXTRA_PILE
+If set on macOS, do not create the auxiliary full\-screen pile when the standard plane has the wrong geometry.
+.TP
 .B TERM
 If \fBTERM\fR is \fIdumb\fR or unset, \fB\-c\fR is disabled and a warning is printed.
-.SH FONTS FOR JAPANESE MODE (\-c)
-Japanese mode uses 32 half-width Katakana and 95 Basic Latin code points (all single-column). The build installs Matrix Code (TrueType) to the fontconfig dir; set your terminal to "Matrix Code". Cmatrix cannot change your terminal font (only \fB\-l\fR console mode loads a font via setfont).
+.SH FONTS FOR MATRIX GLYPH MODE (\-c)
+Matrix glyphs mode uses halfwidth-form code points (U+FF66–U+FF9D) and Basic Latin (single-column). Choose a UTF\-8 terminal font that includes those ranges. Cmatrix does not change your terminal font; use your terminal’s font settings or the install helper scripts.
 .RS
-.IP "Matrix Code (installed)" 4
-Installed by \fBmake install\fR to e.g. /usr/share/fonts/truetype/cmatrix/. Set your terminal font to "Matrix Code" for \-c.
-.IP "Matrix Code NFI (DaFont)" 4
-Optional. Download from https://www.dafont.com/matrix-code-nfi.font and install; set terminal to "Matrix Code NFI".
 .IP "Testing your font" 4
-Paste in your terminal: \fIｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿ\fR. If you see boxes or replacement characters, the font does not have half-width Katakana.
+Paste in your terminal: \fIｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿ\fR. If you see boxes or replacement characters, the font does not include the halfwidth forms used for matrix glyphs (U+FF66–U+FF9D).
 .RE
 .SH BUGS
 This program is very CPU intensive.  Don't be surprised if it eats up over

@@ -1,7 +1,7 @@
 # cMatrix
-[![CMake on a single platform](https://github.com/shr00mie/cmatrix/actions/workflows/cmake-single-platform.yml/badge.svg)](https://github.com/shr00mie/cmatrix/actions/workflows/cmake-single-platform.yml)
+[![Make build](https://github.com/shr00mie/cmatrix/actions/workflows/make-build.yml/badge.svg)](https://github.com/shr00mie/cmatrix/actions/workflows/make-build.yml)
 
-For the time being, Ubuntu only.
+Supported on **Ubuntu** (Linux) and **macOS** (Intel and Apple silicon). The build uses **Clang**, **Make**, and **Notcurses** (`pkg-config`).
 
 ## Digital Rain Demo
 [Demo](https://github.com/user-attachments/assets/3178be08-7594-43bf-ab6d-fffcdf64601c)
@@ -17,50 +17,43 @@ git clone https://github.com/shr00mie/cmatrix.git
 cd cmatrix
 ```
 
-## Dependencies (Ubuntu)
+## Setup (two steps)
 
-Run the dependency installer script:
+| Script | Role |
+|--------|------|
+| **`./scripts/01_check_install_deps.sh`** | System packages (compilers, Notcurses, etc.). |
+| **`./scripts/02_compile_install_bin.sh`** | **`make`**, then install under **`PREFIX`** (default **`~/.local`**): binary, man page, data, fonts. |
 
-```bash
-./data/install-dependencies.sh
-```
-
-This installs the toolchain and runtime/build deps for the Notcurses renderer, including:
-
-- `build-essential`
-- `cmake`
-- `pkg-config`
-- `libnotcurses-dev`
-- `fontconfig`
-- `fonts-dejavu-core`
-- `python3`
-
-## Compile via CMake
+**`sudo`** is only for **step 1** on Ubuntu when **`apt`** runs as a non-root user. **Step 2** / **`make install`** does not need **`sudo`** for a normal **`~/.local`** install. Details, package lists, and edge cases are in the scripts.
 
 ```bash
-mkdir -p build
-cd build
-cmake ..
-make
+./scripts/01_check_install_deps.sh
+./scripts/02_compile_install_bin.sh
 ```
 
-## Install
+## Default paths
 
-The install step may require `sudo` because it installs system fonts / refreshes font cache:
+Default **`PREFIX`** is **`~/.local`**.
+
+| Artifact | Linux | macOS |
+|----------|-------|--------|
+| Binary | **`~/.local/bin/cmatrix`** | same |
+| Man page | **`~/.local/share/man/man1/cmatrix.1`** | same |
+| Data (uninstall helper, optional scripts) | **`~/.local/share/cmatrix/`** | same |
+| Patched DejaVu (rain PUA glyphs) | **`~/.local/share/fonts/DejaVuSansMono.ttf`** (from **`data/fonts/DejaVuSansMono_patched.ttf`**) + **`fc-cache -fv ~/.local/share/fonts/`** | **`~/Library/Fonts/DejaVuSansMono.ttf`** |
 
 ```bash
-sudo make install
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-After install, update your terminal *profile font* to the patched `DejaVu Sans Mono` (your “DejaVuSansMono”).
-If your terminal profile is set to a different font, `cmatrix` will run but the patched glyphs may not render correctly.
+**macOS font helper:** **`$HOME/.local/share/cmatrix/set-terminal-font.sh`** (see also **`data/macos/`**). Use **DejaVu Sans Mono** in the terminal profile for correct glyphs.
 
 ## Execution flags overview
 
 Run `cmatrix` with options like:
 
 ```bash
-cmatrix -a -b -T green -H white -F 23.976
+cmatrix -a -b -T green -H white -F 24
 ```
 
 Common flags (from `cmatrix -h` / `cmatrix.1`):
@@ -68,37 +61,41 @@ Common flags (from `cmatrix -h` / `cmatrix.1`):
 - `-a` : asynchronous scroll
 - `-b` : bold characters on
 - `-B` : all bold characters (overrides `-b`)
-- `-c` : “Japanese mode” (draws Matrix Code glyphs; needs a proper UTF-8 terminal + installed Matrix Code font)
-- `-f` : force Linux `$TERM` type to be on
-- `-l` : Linux mode (console: uses `setfont/consolechars`; you must install a console font for `-l`)
+- `-c` : matrix glyphs mode (movie-style halfwidth column stream + Latin; needs UTF-8 and a terminal font that includes those code points)
 - `-o` : old-style scrolling
-- `-L` : locks cmatrix (cannot quit)
 - `-k` : every character change
-- `-n` : no bold characters (overrides `-b`)
 - `-s` : screensaver mode (exits on first keystroke)
 - `-V` : print version and exit
-- `-F fps` : frame rate (allowed range: 1 to 24; default ~23.976)
-- `-T color` : tail color (default green). Valid: `green, red, blue, white, yellow, cyan, magenta, black`
-- `-H color` : drop head color (default white). Valid: `green, red, blue, white, yellow, cyan, magenta, black`
-- `-O color` : message color (default red). Valid: `green, red, blue, white, yellow, cyan, magenta, black`
+- `-F fps` : frame rate (allowed range: 12–60; default 24)
+- `-T`, `-H`, `-O` : each takes a color as a **name** (string) or **hex** (`#RRGGBB`). Defaults: tail green, head mint, message red.
 - `-M message` : add a centered message
-
-## Uninstall script location
-
-After installation, the repo-provided uninstall script will be copied to:
-
-`~/.local/share/cmatrix/uninstall.sh`
-
-This script restores the original system `DejaVuSansMono.ttf` from `~/.local/share/cmatrix/backup/` and refreshes the system font cache.
 
 ## ToDo:
 - [ ] tweak init sequence to make drop spawn more parabolic.
 - [ ] migratory messages; appear in random locations. appear. stick around for like 10 seconds, get wiped, then get revealed somewhere else on screen.
 - [ ] play around with total active columns and tail lengths a bit more. they're close, but not quite where i want them.
 - [ ] mess with how drops spawn in columns with existing tails and how the squeegee fade works with various length sliding windows.
-- [ ] update ubuntu installer to query gnome term profile for current font, and patch user's preffered font with matrix glyphs.
+- [ ] update Ubuntu helper to query GNOME Terminal profile font and patch preferred font with rain PUA glyphs.
 - [ ] figure out how to get this to work with putty.
 - [ ] clone Emily Blunt.
+
+## Uninstall
+
+```bash
+make uninstall
+```
+
+Uses **`02`** in uninstall mode with your **`PREFIX`** / **`DESTDIR`** (see script).
+
+## Uninstall helper and optional system-wide font
+
+After **`make install`**, a copy of the uninstall helper lives at:
+
+**`~/.local/share/cmatrix/uninstall.sh`**
+
+You can run it directly; **`make uninstall`** also invokes the logic from the repo via the install script.
+
+**`data/fonts/install-dejavu-user-font.sh`** is **not** part of the default two-step flow. Use it only if you want to **replace the distro’s system DejaVu** under **`/usr/share/fonts/...`** (requires **root**). Normal installs use **user fonts** only (**`~/.local/share/fonts/`** on Linux).
 
 ## Attribution
 
