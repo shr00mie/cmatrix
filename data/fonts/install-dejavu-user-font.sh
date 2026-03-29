@@ -1,27 +1,30 @@
 #!/usr/bin/env bash
-# Install CMatrix DejaVu Sans Mono patch (system-wide) with user-local backup.
+# Optional: install CMatrix DejaVu Sans Mono patch system-wide (overwrites distro DejaVu).
+#
+# Default `make install` on Linux does NOT use this script: it installs
+# DejaVuSansMono_patched.ttf as ~/.local/share/fonts/DejaVuSansMono.ttf and runs fc-cache.
+# Use this helper only if you want every app on the machine to resolve "DejaVu Sans Mono"
+# to the patched file via the system font path (requires root).
 #
 # What this does (default / full mode):
 # 1) Ensure ~/.local/share/cmatrix exists for the *real* invoking user.
 # 2) Ensure the backup directory contains the original DejaVuSansMono.ttf.
-# 3) Overwrite system DejaVuSansMono.ttf (usually
+# 3) Overwrite system DejaVuSansMono.ttf (often
 #    /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf on Debian/Ubuntu) with
 #    the patched font from the repo (DejaVuSansMono_patched.ttf beside this script)
-#    or from .../dejavu/DejaVuSansMono.ttf after cmake install (same name as the system file).
+#    or from .../dejavu/DejaVuSansMono.ttf after a system-targeted install.
 # 4) Refresh system font cache (fc-cache).
 # 5) Copy the repo's uninstall script into ~/.local/share/cmatrix/uninstall.sh.
 #
-# CMake install uses --backup-only before installing DejaVuSansMono.ttf into the
-# font directory, then --finalize for cache + uninstall helper. The _patched name
-# exists only in the repository; on disk under .../truetype/dejavu/ the file is
-# always DejaVuSansMono.ttf.
+# The _patched name exists only in the repository; on disk in system dirs the file is
+# named DejaVuSansMono.ttf.
 #
 # Run this script with root privileges (via sudo) for the system font overwrite.
 #
 # Usage:
-#   install-dejavu-user-font.sh           # full install (typical manual run from repo data/fonts/)
-#   install-dejavu-user-font.sh --backup-only   # only backup system font (cmake: run before file install)
-#   install-dejavu-user-font.sh --finalize      # fc-cache + uninstall copy (cmake: after file install)
+#   install-dejavu-user-font.sh           # full system-wide install (from repo data/fonts/)
+#   install-dejavu-user-font.sh --backup-only   # only backup system font
+#   install-dejavu-user-font.sh --finalize      # fc-cache + uninstall copy only
 
 set -euo pipefail
 
@@ -110,7 +113,7 @@ backup_system_font_if_needed() {
 
 finalize_install() {
   local SYSTEM_FONT_DIR UNINSTALL_SRC UNINSTALL_DEST
-  # Refresh font cache (system path was updated by cmake install or manual copy).
+  # Refresh font cache (system path was updated by make install or manual copy).
   if command -v fc-match >/dev/null 2>&1; then
     SYSTEM_DEJAVU_TTF="$(find_system_dejavu)" || SYSTEM_DEJAVU_TTF=""
     if [ -n "${SYSTEM_DEJAVU_TTF}" ] && [ -f "${SYSTEM_DEJAVU_TTF}" ]; then
@@ -153,7 +156,7 @@ fi
 
 backup_system_font_if_needed
 
-# Repo only: DejaVuSansMono_patched.ttf. After cmake install, the patched bytes live as
+# Repo only: DejaVuSansMono_patched.ttf. After make install, the patched bytes live as
 # .../dejavu/DejaVuSansMono.ttf (no _patched suffix on disk).
 PATCHED_FONT="${SCRIPT_DIR}/DejaVuSansMono_patched.ttf"
 if [ ! -f "${PATCHED_FONT}" ]; then
@@ -169,7 +172,7 @@ SYSTEM_DEJAVU_TTF="$(find_system_dejavu)" || {
   exit 1
 }
 
-# Same path (e.g. cmake already installed to system path): nothing to copy.
+# Same path (e.g. installer already copied to system path): nothing to copy.
 if [ "${PATCHED_FONT}" = "${SYSTEM_DEJAVU_TTF}" ]; then
   echo "Patched font already installed at: ${SYSTEM_DEJAVU_TTF}"
 else

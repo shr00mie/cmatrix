@@ -8,7 +8,6 @@ build/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
-Makefile
 CPackConfig.cmake
 CPackSourceConfig.cmake
 CPack*.cmake
@@ -22,7 +21,6 @@ Testing/
 # Autotools / configure
 # ---------------------------------------------------------------------------
 config.h
-Makefile
 Makefile.in
 stamp-h
 stamp-h[0-9]*
@@ -120,8 +118,6 @@ __pycache__/
 docs/
 profile_logs/
 SPECS.md
-# Generated monospace variant (run set_monospace_flag.py to recreate)
-data/fonts/Matrix-Code-NFI-mono.ttf
 data/fonts/backup/
 data/fonts/scripts/
 data/fonts/old/
