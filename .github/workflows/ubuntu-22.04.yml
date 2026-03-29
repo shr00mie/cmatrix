@@ -1,0 +1,41 @@
+# Clang + Make + Notcurses — same OS label as runs-on
+
+name: ubuntu-22.04
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+concurrency:
+  group: ubuntu-22.04-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ubuntu-22-04:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            clang \
+            pkg-config \
+            libnotcurses-dev
+          clang --version
+          pkg-config --print-errors --modversion notcurses
+      - name: Build
+        env:
+          CC: clang
+        run: |
+          set -eux
+          make distclean || true
+          make
+      - name: Version smoke
+        run: ./cmatrix -V

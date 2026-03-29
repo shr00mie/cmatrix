@@ -1,10 +1,10 @@
 # Travis CI: Linux (Ubuntu) build smoke only.
 #
 # Cross-platform coverage (Ubuntu LTS + macOS, Clang + Make + Notcurses) is defined in
-# .github/workflows/make-build.yml. Travis no longer offers macOS builders for new work;
-# use GitHub Actions for macOS compatibility checks.
+# .github/workflows/ubuntu-*.yml and macos-*.yml. Travis no longer offers macOS
+# builders for new work; use GitHub Actions for macOS compatibility checks.
 #
-# Apt packages align with scripts/01_check_install_deps.sh (Ubuntu) and make-build.yml (linux job).
+# Apt packages align with scripts/01_check_install_deps.sh (Ubuntu) and the Ubuntu GA workflows.
 language: c
 dist: jammy
 compiler: clang

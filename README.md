@@ -1,5 +1,9 @@
 # cMatrix
-[![Make build](https://github.com/shr00mie/cmatrix/actions/workflows/make-build.yml/badge.svg)](https://github.com/shr00mie/cmatrix/actions/workflows/make-build.yml)
+
+[![ubuntu-22.04](https://github.com/shr00mie/cmatrix/actions/workflows/ubuntu-22.04.yml/badge.svg)](https://github.com/shr00mie/cmatrix/actions/workflows/ubuntu-22.04.yml)
+[![ubuntu-24.04](https://github.com/shr00mie/cmatrix/actions/workflows/ubuntu-24.04.yml/badge.svg)](https://github.com/shr00mie/cmatrix/actions/workflows/ubuntu-24.04.yml)
+[![macos-14](https://github.com/shr00mie/cmatrix/actions/workflows/macos-14.yml/badge.svg)](https://github.com/shr00mie/cmatrix/actions/workflows/macos-14.yml)
+[![macos-15](https://github.com/shr00mie/cmatrix/actions/workflows/macos-15.yml/badge.svg)](https://github.com/shr00mie/cmatrix/actions/workflows/macos-15.yml)
 
 Supported on **Ubuntu** (Linux) and **macOS** (Intel and Apple silicon). The build uses **Clang**, **Make**, and **Notcurses** (`pkg-config`).
 

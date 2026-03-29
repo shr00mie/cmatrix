@@ -1,0 +1,35 @@
+# Clang + Make + Notcurses — same OS label as runs-on
+
+name: macos-14
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+concurrency:
+  group: macos-14-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-14:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          set -eux
+          brew update
+          brew install pkgconf notcurses
+          eval "$(brew shellenv)"
+          xcrun clang --version
+          pkg-config --print-errors --modversion notcurses
+      - name: Build
+        run: |
+          set -eux
+          eval "$(brew shellenv)"
+          make distclean || true
+          make
+      - name: Version smoke
+        run: ./cmatrix -V
