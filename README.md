@@ -5,7 +5,7 @@
 [![macos-14](https://github.com/shr00mie/cmatrix/actions/workflows/macos-14.yml/badge.svg?branch=master)](https://github.com/shr00mie/cmatrix/actions/workflows/macos-14.yml)
 [![macos-15](https://github.com/shr00mie/cmatrix/actions/workflows/macos-15.yml/badge.svg?branch=master)](https://github.com/shr00mie/cmatrix/actions/workflows/macos-15.yml)
 
-Supported on **Ubuntu** (Linux) and **macOS** (Intel and Apple silicon). The build uses **Clang**, **Make**, and **Notcurses** (`pkg-config`).
+Supported on **Ubuntu** (Linux) and **macOS** (Intel and Apple silicon).
 
 ## Digital Rain Demo
 [Demo](https://github.com/user-attachments/assets/3178be08-7594-43bf-ab6d-fffcdf64601c)
@@ -80,7 +80,11 @@ Common flags (from `cmatrix -h` / `cmatrix.1`):
 - [ ] play around with total active columns and tail lengths a bit more. they're close, but not quite where i want them.
 - [ ] mess with how drops spawn in columns with existing tails and how the squeegee fade works with various length sliding windows.
 - [ ] update Ubuntu helper to query GNOME Terminal profile font and patch preferred font with rain PUA glyphs.
-- [ ] figure out how to get this to work with putty.
+- [X] modify patched font to pass PuTTY filter.
+- [X] verify that cmatrix running on remote box via PuTTY displays properly on windows.
+<img width="661" height="394" alt="image" src="https://github.com/user-attachments/assets/28387ada-a197-42bd-99de-db937a8b352f" />
+
+- [ ] automate finding, enumerating, and editing PuTTY font and Terminal-type string config via powershell script.
 - [ ] clone Emily Blunt.
 
 ## Uninstall
