@@ -295,14 +295,12 @@ static unsigned char *column_active = NULL;
 /* Per-column clear buffer size (3..length/2); slide this many rows ahead of the drop through old tail */
 static int *column_clear_buffer = NULL;
 /* Timer-gated sequential drop spawning state */
-static int active_col_count = 0;
 static int max_col_drops = 0;
 static int spawn_timer_enabled = 0;
-static double spawn_timer_remaining_sec = 3.00; /* two decimal points */
 static struct timespec spawn_timer_start_ts;
-static struct timespec spawn_timer_last_tick_ts;
-static const double spawn_interval_initial_sec = 3.00; /* initial countdown */
-static const double spawn_timer_disable_after_sec = 15.0; /* ~15 seconds total */
+static const double spawn_timer_disable_after_sec = 15.0;
+static double spawn_ramp_drops_per_sec = 0.0;
+static double spawn_ramp_next_spawn_elapsed = 0.0;
 /* Per-column async speed (rows/sec) and accumulator (rows). */
 static float *col_speed_rps = NULL;
 static float *col_row_accum = NULL;
@@ -684,11 +682,33 @@ static void spec_prepare_spawn_in_column(int col) {
     matrix[1][col].sweegie_base_bold = 0;
 }
 
+static void unlock_one_column_and_spawn(const char *msg, int msg_len, int msg_y);
+
+static int count_active_columns_locked(void)
+{
+    int n = 0;
+    int k;
+
+    for (k = 0; k < screen_cols; k++) {
+        if (column_active[k])
+            n++;
+    }
+    return n;
+}
+
+static void finish_column_and_replace(int col, const char *msg, int msg_len, int msg_y)
+{
+    pthread_mutex_lock(&cmatrix_spawn_mx);
+    column_active[col] = 0;
+    unlock_one_column_and_spawn(msg, msg_len, msg_y);
+    pthread_mutex_unlock(&cmatrix_spawn_mx);
+}
+
 static void unlock_one_column_and_spawn(const char *msg, int msg_len, int msg_y) {
     int nlocked = 0, nunrevealed = 0, eligible_locked = 0, eligible_unrevealed = 0, k, r;
     if (column_active == NULL)
         return;
-    if (max_col_drops > 0 && active_col_count >= max_col_drops)
+    if (max_col_drops > 0 && count_active_columns_locked() >= max_col_drops)
         return;
     for (k = 0; k < screen_cols; k++) {
         if (!column_active[k]) {
@@ -767,7 +787,6 @@ static void unlock_one_column_and_spawn(const char *msg, int msg_len, int msg_y)
     if (k >= 0 && k < screen_cols) {
         column_active[k] = 1;
         spec_prepare_spawn_in_column(k);
-        active_col_count++;
         last_spawn_col = k;
     }
 }
@@ -983,12 +1002,7 @@ static void run_column_simulation(int j,
 
                 if (i > screen_lines + 1) {
                     if (!firstcoldone && column_active != NULL) {
-                        column_active[j] = 0;
-                        if (active_col_count > 0)
-                            active_col_count--;
-                        pthread_mutex_lock(&cmatrix_spawn_mx);
-                        unlock_one_column_and_spawn(gsim_msg, gsim_msg_len, gsim_msg_y);
-                        pthread_mutex_unlock(&cmatrix_spawn_mx);
+                        finish_column_and_replace(j, gsim_msg, gsim_msg_len, gsim_msg_y);
                         break;
                     }
                     continue;
@@ -1145,7 +1159,7 @@ static void cmatrix_start_workers(void) {
  * allocates matrix[0..screen_lines+1] (extra row holds off-screen head so the
  * bottom visible row stays trail), length/spaces/updates and
  * column_active/column_clear_buffer per column. One column starts active; the
- * spawn-delay timer in main() adds more until active_col_count reaches
+ * spawn-delay timer in main() adds more until active count reaches
  * max_col_drops (ceil(66% of screen_cols)). Fills the grid with -1 (empty).
  * Called at startup and on SIGWINCH (resize).
  * --------------------------------------------------------------------------- */
@@ -1206,13 +1220,12 @@ void var_init() {
     for (j = 0; j < screen_cols; j++)
         column_clear_buffer[j] = 0;
     /* Sequential-drop mode: one column starts active; the spawn-delay timer ramps
-     * up until active_col_count reaches max_col_drops (66% of columns, rounded up). */
+     * up until active count reaches max_col_drops (66% of columns, rounded up). */
     max_col_drops = (screen_cols * 66 + 99) / 100;
     if (max_col_drops < 1)
         max_col_drops = 1;
     if (max_col_drops > screen_cols)
         max_col_drops = screen_cols;
-    active_col_count = 0;
 
     /* Make the matrix (all columns so no cell is uninitialized) */
     for (i = 0; i <= screen_lines + 1; i++) {
@@ -1231,14 +1244,14 @@ void var_init() {
     {
         int first_col = (int)rand_r(&cmatrix_main_rng) % screen_cols;
         column_active[first_col] = 1;
-        active_col_count = 1;
         spec_prepare_spawn_in_column(first_col);
         last_spawn_col = first_col;
 
-        spawn_timer_remaining_sec = spawn_interval_initial_sec; /* 3.00 */
+        spawn_ramp_drops_per_sec =
+            (double)(max_col_drops - 1) / spawn_timer_disable_after_sec;
+        spawn_ramp_next_spawn_elapsed = 0.0;
         spawn_timer_enabled = 1;
         clock_gettime(CLOCK_MONOTONIC, &spawn_timer_start_ts);
-        spawn_timer_last_tick_ts = spawn_timer_start_ts;
     }
 
     /* Dirty tracking: previous-frame buffer */
@@ -1693,75 +1706,48 @@ int main(int argc, char *argv[]) {
         int msg_len = (msg[0] != '\0') ? (int)strlen(msg) : 0;
         int msg_y = (msg_len > 0) ? (screen_cols/2 - msg_len/2) : 0;
 
-        /* Timer-gated sequential drop spawning:
-         * - first drop spawns during var_init(), then timer starts
-         * - while enabled, new drops are activated only when timer hits zero
-         * - timer interval exponentially decays from 2.00s to ~0 over ~10s
-         * - after ~10s, disable timer so subsequent drops ignore it */
+        /* Init ramp: first drop in var_init(); add more over ~15s until max_col_drops. */
         if (spawn_timer_enabled) {
             struct timespec now_ts;
+            int active_now;
             clock_gettime(CLOCK_MONOTONIC, &now_ts);
             double elapsed =
                 (double)(now_ts.tv_sec - spawn_timer_start_ts.tv_sec) +
                 (double)(now_ts.tv_nsec - spawn_timer_start_ts.tv_nsec) / 1000000000.0;
 
+            pthread_mutex_lock(&cmatrix_spawn_mx);
+            active_now = count_active_columns_locked();
+            pthread_mutex_unlock(&cmatrix_spawn_mx);
             if (elapsed >= spawn_timer_disable_after_sec) {
                 spawn_timer_enabled = 0;
-                spawn_timer_remaining_sec = 0.0;
-                while (active_col_count < max_col_drops) {
+                pthread_mutex_lock(&cmatrix_spawn_mx);
+                while (count_active_columns_locked() < max_col_drops)
+                    unlock_one_column_and_spawn(msg, msg_len, msg_y);
+                pthread_mutex_unlock(&cmatrix_spawn_mx);
+            } else if (active_now < max_col_drops) {
+                int target = 1 + (int)floor(elapsed * spawn_ramp_drops_per_sec);
+                if (target > max_col_drops)
+                    target = max_col_drops;
+                if (active_now < target && elapsed >= spawn_ramp_next_spawn_elapsed) {
                     pthread_mutex_lock(&cmatrix_spawn_mx);
                     unlock_one_column_and_spawn(msg, msg_len, msg_y);
                     pthread_mutex_unlock(&cmatrix_spawn_mx);
-                }
-            } else {
-                double dt =
-                    (double)(now_ts.tv_sec - spawn_timer_last_tick_ts.tv_sec) +
-                    (double)(now_ts.tv_nsec - spawn_timer_last_tick_ts.tv_nsec) / 1000000000.0;
-                if (dt < 0)
-                    dt = 0;
-                spawn_timer_last_tick_ts = now_ts;
 
-                spawn_timer_remaining_sec -= dt;
-                while (spawn_timer_enabled && spawn_timer_remaining_sec <= 0.0) {
-                    if (active_col_count < max_col_drops) {
-                        pthread_mutex_lock(&cmatrix_spawn_mx);
-                        unlock_one_column_and_spawn(msg, msg_len, msg_y);
-                        pthread_mutex_unlock(&cmatrix_spawn_mx);
+                    double max_gap = 1.0;
+                    if (spawn_ramp_drops_per_sec > 0.0)
+                        max_gap = 1.0 / spawn_ramp_drops_per_sec;
+                    if (max_gap > 1.0)
+                        max_gap = 1.0;
+                    double min_gap = max_gap * 0.05;
+                    if (min_gap < 0.01)
+                        min_gap = 0.01;
+                    double gap = min_gap;
+                    if (max_gap > min_gap) {
+                        gap = min_gap +
+                              ((double)(rand_r(&cmatrix_main_rng) % 10000) / 10000.0) *
+                                  (max_gap - min_gap);
                     }
-
-                    /* Recompute elapsed at the moment of timer expiry. */
-                    clock_gettime(CLOCK_MONOTONIC, &now_ts);
-                    elapsed =
-                        (double)(now_ts.tv_sec - spawn_timer_start_ts.tv_sec) +
-                        (double)(now_ts.tv_nsec - spawn_timer_start_ts.tv_nsec) / 1000000000.0;
-
-                    if (elapsed >= spawn_timer_disable_after_sec) {
-                        spawn_timer_enabled = 0;
-                        spawn_timer_remaining_sec = 0.0;
-                        while (active_col_count < max_col_drops) {
-                            pthread_mutex_lock(&cmatrix_spawn_mx);
-                            unlock_one_column_and_spawn(msg, msg_len, msg_y);
-                            pthread_mutex_unlock(&cmatrix_spawn_mx);
-                        }
-                        break;
-                    }
-
-                    /* Parabolic decay from 3.00s to 0.00s over ~15s. */
-                    double t = elapsed / spawn_timer_disable_after_sec;
-                    if (t < 0.0)
-                        t = 0.0;
-                    if (t > 1.0)
-                        t = 1.0;
-                    double next_interval =
-                        spawn_interval_initial_sec * (1.0 - t) * (1.0 - t);
-                    /* Quantize to 2 decimals as requested. */
-                    next_interval = floor(next_interval * 100.0 + 0.5) / 100.0;
-                    if (next_interval < 0.0)
-                        next_interval = 0.0;
-                    spawn_timer_remaining_sec = next_interval;
-
-                    /* Spawn-delay timer gates only one activation per expiry. */
-                    break;
+                    spawn_ramp_next_spawn_elapsed = elapsed + gap;
                 }
             }
         }
